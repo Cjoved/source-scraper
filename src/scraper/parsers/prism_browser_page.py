@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from src.scraper.prism_browser_config import PrismBrowserConfig
+from src.models.browser_model import PrismBrowserConfig
 from src.scraper.prism_urls import is_prism_dynamic_app
 
 

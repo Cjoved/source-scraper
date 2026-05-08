@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from src.scraper.parsers.prism_browser_page import content_selectors_for_url
-from src.scraper.prism_browser_config import PrismBrowserConfig
+from src.models.browser_model import PrismBrowserConfig
 
 
 def normalize_cell_text(raw: str) -> str:

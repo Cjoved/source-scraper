@@ -6,7 +6,7 @@ from parsel import Selector
 
 from src.formatter.prism_browser_tables_csv import append_browser_tables_csv
 from src.scraper.parsers.prism_browser_tables import extract_tables_from_page, normalize_cell_text
-from src.scraper.prism_browser_config import PrismBrowserConfig
+from src.models.browser_model import PrismBrowserConfig
 
 
 def _minimal_cfg(**kwargs: object) -> PrismBrowserConfig:
