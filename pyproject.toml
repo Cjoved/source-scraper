@@ -1,0 +1,17 @@
+[project]
+name = "source-scraper"
+version = "0.1.0"
+description = "Modular PRiSM / Prism scrapers (HTTP yield export + optional Scrapling browser)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "parsel>=1.9.0",
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+browser = [
+    "scrapling[all]>=0.4.0",
+]
