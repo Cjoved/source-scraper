@@ -1,7 +1,7 @@
 [project]
 name = "source-scraper"
 version = "0.1.0"
-description = "Modular PRiSM / Prism scrapers (HTTP yield export + optional Scrapling browser)."
+description = "Modular PRiSM / Prism scrapers (HTTP yield export + optional Scrapling browser) with a FastAPI service for structured queries and hybrid semantic search over Qdrant."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -9,9 +9,39 @@ dependencies = [
     "requests>=2.31",
     "python-dotenv>=1.0",
     "rich>=13.0",
+    "pydantic>=2.13.4",
 ]
 
 [project.optional-dependencies]
 browser = [
     "scrapling[all]>=0.4.0",
 ]
+api = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "qdrant-client[fastembed]>=1.14",
+    "pydantic-settings>=2.4",
+    "slowapi>=0.1.9",
+    "structlog>=24.1",
+]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true

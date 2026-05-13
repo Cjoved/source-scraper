@@ -1,9 +1,12 @@
 # Source Scraper
 
-PRiSM-focused data scraping project with two production-ready pipelines:
+PRiSM-focused data project with three layers:
 
 - **Yield export (HTTP API):** bulk CSV extraction across year/semester/region/province.
 - **Browser scrape (Scrapling):** dynamic page scraping with optional table-to-CSV export and corpus output.
+- **HTTP API (FastAPI + Qdrant):** versioned `/v1/` service that exposes structured
+  yield queries, deterministic summaries, bulk export, and a pure hybrid (dense + sparse)
+  semantic search endpoint over the same CSV. See [docs/api.md](docs/api.md).
 
 ## Features
 
@@ -11,7 +14,9 @@ PRiSM-focused data scraping project with two production-ready pipelines:
 - Checkpoint-aware resumable runs
 - Structured scraper layering (`clients` -> `parsers` -> `spiders` -> `formatter`)
 - Environment-driven tuning for rate limits, retries, delays, and browser behavior
-- Unit tests for parser and runner core paths
+- FastAPI service with two Qdrant collections (`prism_yield_records`,
+  `prism_yield_knowledge`) and an idempotent indexer.
+- Unit tests for scraper, services, indexer, and every API route (offline fakes).
 
 ## Project Structure
 
@@ -55,12 +60,23 @@ uv sync --extra browser
 uv run scrapling install
 ```
 
-## Running
-
-Run the application:
+Install API stack (required for the FastAPI service + indexer):
 
 ```bash
-uv run python main.py
+uv sync --extra api
+```
+
+## Running
+
+`main.py` is a single entry point with three subcommands:
+
+```bash
+uv run python main.py                # default: scrape (same as before)
+uv run python main.py scrape         # explicit scrape mode
+uv run python main.py api            # start FastAPI via uvicorn
+uv run python main.py index --all    # run the Qdrant indexer
+
+uv run uvicorn main:app              # uvicorn directly (uses re-exported `app`)
 ```
 
 ### Mode 1: Yield Export (HTTP -> CSV)
@@ -117,6 +133,25 @@ Outputs:
 - `PRISM_CONTENT_SELECTOR`: optional CSS selector override for focused extraction
 - `PRISM_REWRITE_DATAPRODUCTS_TO_APP`: rewrite `/dataproducts/` to dynamic app endpoint
 - `PRISM_RESUME_CHECKPOINT`: enable/disable resume behavior
+
+## API service (Qdrant + FastAPI)
+
+```bash
+# Install API dependencies
+uv sync --extra api
+
+# Run Qdrant locally
+docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
+
+# Index the yield CSV into Qdrant (structured + knowledge collections)
+uv run python main.py index --collections all
+
+# Start the API (either of these works)
+uv run python main.py api --reload --port 8000
+uv run uvicorn main:app --reload --port 8000
+```
+
+Full endpoint reference and configuration in [docs/api.md](docs/api.md).
 
 ## Testing
 
