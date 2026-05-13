@@ -1,0 +1,15 @@
+{"query": "Bangued Abra 2018 first semester yield", "expected_filters": {"municipality": "Bangued", "year_min": 2018, "year_max": 2018, "semester": 1}}
+{"query": "rice yield Bucay Abra 2019", "expected_filters": {"municipality": "Bucay", "year_min": 2019, "year_max": 2019}}
+{"query": "Laoag Ilocos Norte 2020 second semester", "expected_filters": {"municipality": "Laoag", "year_min": 2020, "year_max": 2020, "semester": 2}}
+{"query": "CAR region 2018 rice", "expected_filters": {"region": "CAR", "year_min": 2018, "year_max": 2018}}
+{"query": "Apayao Calanasan harvest", "expected_filters": {"municipality": "Calanasan"}}
+{"query": "Region I Ilocos rice", "expected_filters": {"region": "Region I"}}
+{"query": "Abra municipalities 2020", "expected_filters": {"province": "Abra", "year_min": 2020, "year_max": 2020}}
+{"query": "highest yield municipality Region I", "expected_filters": {"region": "Region I"}}
+{"query": "lowest yield Abra", "expected_filters": {"province": "Abra"}}
+{"query": "Bangued 2nd semester", "expected_filters": {"municipality": "Bangued", "semester": 2}}
+{"query": "Pangasinan 2024", "expected_filters": {"province": "Pangasinan", "year_min": 2024, "year_max": 2024}}
+{"query": "CAR 1st sem 2019", "expected_filters": {"region": "CAR", "year_min": 2019, "year_max": 2019, "semester": 1}}
+{"query": "rice yield Calanasan", "expected_filters": {"municipality": "Calanasan"}}
+{"query": "Mountain Province rice harvest", "expected_filters": {"province": "Mountain Province"}}
+{"query": "average yield Bulacan", "expected_filters": {"province": "Bulacan"}}
