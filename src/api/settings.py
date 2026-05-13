@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     embedding_sparse_model: str = Field(default="Qdrant/bm25")
     embedding_dense_size: int = Field(default=384, gt=0)
 
+    hybrid_prefetch_multiplier: int = Field(default=4, gt=0, le=20)
+    hybrid_fusion: str = Field(default="rrf")
+
     schema_version: str = Field(default="v1")
     csv_source_relpath: str = Field(default="prism_processed/prism_yield_export.csv")
 
@@ -71,6 +74,15 @@ class Settings(BaseSettings):
         allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
         if normalized not in allowed:
             raise ValueError(f"api_log_level must be one of {sorted(allowed)}")
+        return normalized
+
+    @field_validator("hybrid_fusion")
+    @classmethod
+    def _normalize_fusion(cls, value: str) -> str:
+        normalized = value.lower().strip()
+        allowed = {"rrf", "dbsf"}
+        if normalized not in allowed:
+            raise ValueError(f"hybrid_fusion must be one of {sorted(allowed)}")
         return normalized
 
     @property

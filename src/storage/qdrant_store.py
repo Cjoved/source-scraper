@@ -328,22 +328,69 @@ class QdrantStore:
         limit: int,
         min_score: float,
     ) -> list[KnowledgeHitRecord]:
+        """Run true hybrid retrieval over the knowledge collection.
+
+        Dense and sparse prefetches are over-fetched independently and fused
+        with Reciprocal Rank Fusion (or DBSF if configured). The text is
+        wrapped in ``models.Document`` so qdrant-client performs FastEmbed
+        inference server-side via the modern ``query_points`` API.
+        """
+        from qdrant_client import models
+
+        dense_name = self._client.get_vector_field_name()
+        sparse_name = self._client.get_sparse_vector_field_name()
+        qfilter = self._build_qdrant_filter(flt)
+        prefetch_limit = max(limit * self._settings.hybrid_prefetch_multiplier, limit)
+        fusion = (
+            models.Fusion.RRF
+            if self._settings.hybrid_fusion == "rrf"
+            else models.Fusion.DBSF
+        )
+
+        prefetch: list[Any] = []
+        if dense_name:
+            prefetch.append(
+                models.Prefetch(
+                    query=models.Document(
+                        text=query_text,
+                        model=self._settings.embedding_dense_model,
+                    ),
+                    using=dense_name,
+                    limit=prefetch_limit,
+                    filter=qfilter,
+                )
+            )
+        if sparse_name:
+            prefetch.append(
+                models.Prefetch(
+                    query=models.Document(
+                        text=query_text,
+                        model=self._settings.embedding_sparse_model,
+                    ),
+                    using=sparse_name,
+                    limit=prefetch_limit,
+                    filter=qfilter,
+                )
+            )
+
         try:
-            response = self._client.query(
+            response = self._client.query_points(
                 collection_name=self.knowledge_name,
-                query_text=query_text,
-                query_filter=self._build_qdrant_filter(flt),
+                prefetch=prefetch,
+                query=models.FusionQuery(fusion=fusion),
+                query_filter=qfilter,
                 limit=limit,
+                with_payload=True,
             )
         except Exception as exc:
             raise self._wrap_qdrant_error(exc) from exc
 
         hits: list[KnowledgeHitRecord] = []
-        for item in response:
-            score = float(getattr(item, "score", 0.0) or 0.0)
+        for point in response.points:
+            score = float(getattr(point, "score", 0.0) or 0.0)
             if score < min_score:
                 continue
-            payload = dict(getattr(item, "metadata", None) or getattr(item, "payload", None) or {})
+            payload = dict(getattr(point, "payload", None) or {})
             hits.append(KnowledgeHitRecord(score=score, payload=payload))
         return hits
 
