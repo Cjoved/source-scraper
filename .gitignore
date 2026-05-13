@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Runtime data artifacts (keep .gitkeep only)
+data/checkpoints/*
+!data/checkpoints/.gitkeep
+data/prism_processed/*
+!data/prism_processed/.gitkeep
+data/prism/*
+!data/prism/.gitkeep
+data/raw/*
+!data/raw/.gitkeep
