@@ -1,9 +1,10 @@
 # Source Scraper Agent Guide
 
 ## Scope
-- This repository scrapes PRiSM data using two pipelines:
+- This repository scrapes PRiSM data and optional Facebook profile posts:
   - `export_yield_csv` / `export_yield`: HTTP API bulk export to CSV.
   - Browser pipelines (`browser_csv` / default): Scrapling page scraping, optional table-to-CSV and corpus output.
+  - `fb_page`: Facebook profile login → latest post + images → JSONL → logout (for downstream AI).
 
 ## Project Layout
 - `main.py`: entrypoint.
@@ -28,6 +29,10 @@
   - `PRISM_JOB=browser_csv`
   - `PRISM_URL=https://prism.philrice.gov.ph/dataproducts/`
   - `PRISM_BROWSER_SAVE_CORPUS=false`
+- Facebook profile mode:
+  - `PRISM_JOB=fb_page`
+  - `FB_PROFILE_URL=https://www.facebook.com/liezl.p.aquino`
+  - `FB_EMAIL` / `FB_PASSWORD` (never commit)
 
 ## Output Contracts
 - Yield export CSV: `data/prism_processed/prism_yield_export.csv`
@@ -36,6 +41,10 @@
 - Checkpoints:
   - `data/checkpoints/prism_yield_export_checkpoint.json`
   - `data/checkpoints/prism_checkpoint.json`
+  - `data/checkpoints/fb_liezl_checkpoint.json`
+- Facebook JSONL + images:
+  - `data/prism_processed/fb_liezl_posts.jsonl`
+  - `data/prism_processed/fb_liezl_images/` (kept until a future AI/cleanup step)
 
 ## Coding Rules
 - Keep scraper layering explicit:
