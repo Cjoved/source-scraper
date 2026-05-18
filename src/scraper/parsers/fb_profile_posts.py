@@ -377,3 +377,25 @@ def parse_top_post_from_html(html: str, profile_url: str) -> FbTopPost | None:
     from parsel import Selector
 
     return parse_top_post_from_page(Selector(text=html), profile_url)
+
+
+def parse_daily_posts_from_page(
+    page: Any,
+    profile_url: str,
+    *,
+    tz_name: str,
+    max_posts: int,
+    max_age_hours: int = 23,
+) -> list[FbTopPost]:
+    from src.scraper.parsers.fb_post_dates import post_in_daily_window, post_too_old_for_daily_feed
+    from src.scraper.parsers.fb_story_blocks import parse_stories_after_other_posts
+
+    collected: list[FbTopPost] = []
+    for post in parse_stories_after_other_posts(page, profile_url, max_posts=max_posts * 2):
+        if post_too_old_for_daily_feed(post, tz_name, max_hours=max_age_hours):
+            break
+        if post_in_daily_window(post, tz_name, max_hours=max_age_hours):
+            collected.append(post)
+        if len(collected) >= max_posts:
+            break
+    return collected

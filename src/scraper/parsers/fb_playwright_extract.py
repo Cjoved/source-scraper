@@ -518,3 +518,124 @@ def extract_top_post_from_playwright(
     if start >= 0:
         return None, f"{note}_validation_failed"
     return None, note
+
+
+def _scroll_page_down(page: Any) -> None:
+    try:
+        page.evaluate("window.scrollBy(0, Math.floor(window.innerHeight * 0.9))")
+        page.wait_for_timeout(2000)
+    except Exception:
+        pass
+
+
+def _collect_stories_from_html(
+    page: Any,
+    profile_url: str,
+    seen_ids: set[str],
+    *,
+    max_posts: int,
+) -> list[FbTopPost]:
+    from parsel import Selector
+
+    from src.scraper.parsers.fb_story_blocks import parse_stories_after_other_posts
+
+    try:
+        html = page.content()
+    except Exception:
+        return []
+
+    found: list[FbTopPost] = []
+    for post in parse_stories_after_other_posts(
+        Selector(text=html), profile_url, max_posts=max_posts * 3
+    ):
+        if post.post_id in seen_ids:
+            continue
+        seen_ids.add(post.post_id)
+        found.append(post)
+    return found
+
+
+def _collect_stories_from_locators(
+    page: Any,
+    profile_url: str,
+    seen_ids: set[str],
+) -> list[FbTopPost]:
+    from parsel import Selector
+
+    found: list[FbTopPost] = []
+    xpaths = (
+        "following::*[@aria-posinset]",
+        'following::*[@data-ad-rendering-role="description"]/ancestor::*[@aria-posinset][1]',
+        'following::*[@data-ad-rendering-role="description"]',
+    )
+    for label in other_posts_labels():
+        try:
+            marker = page.get_by_text(label, exact=False).first
+        except Exception:
+            continue
+        for xpath in xpaths:
+            try:
+                loc = marker.locator(f"xpath={xpath}")
+                count = loc.count()
+            except Exception:
+                continue
+            for i in range(min(count, 40)):
+                try:
+                    node = loc.nth(i)
+                    html = node.evaluate("el => el.outerHTML || ''") or ""
+                    post = build_post_from_story_root(
+                        Selector(text=html), profile_url, html_fragment=html
+                    )
+                    if post is None or post.post_id in seen_ids:
+                        continue
+                    seen_ids.add(post.post_id)
+                    found.append(post)
+                except Exception:
+                    continue
+    return found
+
+
+def extract_daily_posts_from_playwright(
+    page: Any,
+    profile_url: str,
+    *,
+    max_posts: int,
+    scroll_passes: int,
+) -> tuple[list[FbTopPost], str]:
+    """Scroll the profile feed repeatedly; virtualized DOM only exposes a few posts at a time."""
+    seen_ids: set[str] = set()
+    ordered: list[FbTopPost] = []
+
+    def _merge(batch: list[FbTopPost]) -> int:
+        added = 0
+        for post in batch:
+            if post.post_id in seen_ids:
+                continue
+            seen_ids.add(post.post_id)
+            ordered.append(post)
+            added += 1
+        return added
+
+    _scroll_other_posts_marker(page)
+    _merge(_collect_stories_from_locators(page, profile_url, seen_ids))
+    _merge(_collect_stories_from_html(page, profile_url, seen_ids, max_posts=max_posts))
+
+    stagnant_rounds = 0
+    for _ in range(max(scroll_passes, 1)):
+        if len(ordered) >= max_posts:
+            break
+        before = len(ordered)
+        _scroll_page_down(page)
+        _scroll_other_posts_marker(page)
+        _merge(_collect_stories_from_locators(page, profile_url, seen_ids))
+        _merge(_collect_stories_from_html(page, profile_url, seen_ids, max_posts=max_posts))
+        if len(ordered) == before:
+            stagnant_rounds += 1
+            if stagnant_rounds >= 2:
+                break
+        else:
+            stagnant_rounds = 0
+
+    if ordered:
+        return ordered[:max_posts], f"daily_collected_{len(ordered)}_scroll_{scroll_passes}"
+    return [], "daily_no_posts"

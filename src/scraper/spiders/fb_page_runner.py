@@ -19,8 +19,15 @@ from src.scraper.clients.fb_browser_session import (
 )
 from src.scraper.clients.fb_media import download_post_images, repo_relative_path
 from src.scraper.fb_config import load_fb_page_config
-from src.scraper.parsers.fb_profile_posts import parse_top_post_from_page
-from src.scraper.spiders.fb_checkpoint import build_checkpoint_update, should_persist_post
+from src.scraper.parsers.fb_post_dates import post_in_daily_window, post_too_old_for_daily_feed, today_in_timezone
+from src.scraper.parsers.fb_profile_posts import parse_daily_posts_from_page, parse_top_post_from_page
+from src.scraper.spiders.fb_checkpoint import (
+    build_checkpoint_update,
+    load_seen_post_ids,
+    merge_seen_ids,
+    should_persist_post,
+    should_persist_post_id,
+)
 from src.services.checkpoint import load_json, save_checkpoint_json
 from src.services.config import data_path
 from src.utils.net import require_internet
@@ -66,12 +73,137 @@ def build_post_record(cfg: FbPageConfig, post: FbTopPost, image_paths: list[str]
     }
 
 
+def _filter_posts_for_daily_window(
+    posts: list[FbTopPost],
+    cfg: FbPageConfig,
+) -> list[FbTopPost]:
+    filtered: list[FbTopPost] = []
+    max_h = cfg.daily_max_age_hours
+    for post in posts:
+        if post_too_old_for_daily_feed(post, cfg.scrape_timezone, max_hours=max_h):
+            break
+        if post_in_daily_window(post, cfg.scrape_timezone, max_hours=max_h):
+            filtered.append(post)
+        if len(filtered) >= cfg.max_posts_per_run:
+            break
+    return filtered
+
+
+def _persist_post(
+    session: Any,
+    cfg: FbPageConfig,
+    post: FbTopPost,
+    console: Console,
+) -> list[str]:
+    image_paths: list[str] = []
+    if cfg.download_images and post.image_urls:
+        saved = download_post_images(session, cfg, post.post_id, post.image_urls)
+        image_paths = [repo_relative_path(p) for p in saved]
+        if saved:
+            console.print(f"[green]Images[/green] — {len(saved)} file(s) for {post.post_id[:12]}…")
+        else:
+            console.print(f"[yellow]Image download failed for {post.post_id[:12]}…[/yellow]")
+    record = build_post_record(cfg, post, image_paths)
+    append_fb_post_jsonl(cfg.output_jsonl_path, record)
+    return image_paths
+
+
+def _run_daily_scrape(
+    session: Any,
+    cfg: FbPageConfig,
+    page: Any,
+    extract_holder: list[FbTopPost],
+    note: str,
+    checkpoint: dict[str, Any],
+    checked_at: str,
+    console: Console,
+) -> int:
+    target = today_in_timezone(cfg.scrape_timezone)
+    console.print(
+        f"[dim]Daily mode — last {cfg.daily_max_age_hours}h window "
+        f"({cfg.scrape_timezone}, today {target.isoformat()}), "
+        f"max {cfg.max_posts_per_run} posts[/dim]"
+    )
+    if note:
+        console.print(f"[dim]Extract: {note}[/dim]")
+
+    posts = list(extract_holder)
+    if not posts:
+        posts = parse_daily_posts_from_page(
+            page,
+            cfg.profile_url,
+            tz_name=cfg.scrape_timezone,
+            max_posts=cfg.max_posts_per_run,
+            max_age_hours=cfg.daily_max_age_hours,
+        )
+
+    raw_count = len(posts)
+    posts = _filter_posts_for_daily_window(posts, cfg)
+    if raw_count != len(posts):
+        console.print(
+            f"[dim]After {cfg.daily_max_age_hours}h filter: {len(posts)} of {raw_count} post(s)[/dim]"
+        )
+    if not posts:
+        console.print(
+            f"[yellow]No posts in the last {cfg.daily_max_age_hours}h.[/yellow]\n"
+            "[dim]Posts should show 1h–23h (or minutes). Try FB_DAILY_SCROLL_PASSES=6.[/dim]"
+        )
+        checkpoint["last_checked_at"] = checked_at
+        checkpoint["last_scrape_date"] = target.isoformat()
+        save_checkpoint_json(cfg.checkpoint_path, checkpoint, add_updated=False)
+        if cfg.debug_save_html:
+            _save_debug_html(page, console)
+        return 1
+
+    seen = load_seen_post_ids(checkpoint, cfg.output_jsonl_path)
+    new_posts = [p for p in posts if should_persist_post_id(seen, p.post_id)]
+    console.print(
+        f"[cyan]Found {len(posts)} post(s) today[/cyan] — "
+        f"{len(new_posts)} new, {len(posts) - len(new_posts)} already saved"
+    )
+
+    if not new_posts:
+        console.print("[dim]All of today's posts are already in JSONL/checkpoint.[/dim]")
+        checkpoint["last_checked_at"] = checked_at
+        checkpoint["last_scrape_date"] = target.isoformat()
+        save_checkpoint_json(cfg.checkpoint_path, checkpoint, add_updated=False)
+        return 0
+
+    saved_ids: list[str] = []
+    for post in new_posts:
+        preview = post.text[:60] + ("…" if len(post.text) > 60 else "")
+        console.print(f"[bold]→[/bold] {post.post_id[:16]}… {preview}")
+        _persist_post(session, cfg, post, console)
+        saved_ids.append(post.post_id)
+
+    seen = merge_seen_ids(seen, saved_ids)
+    latest = new_posts[0]
+    checkpoint.update(
+        build_checkpoint_update(
+            cfg.profile_url,
+            latest.post_id,
+            latest.posted_at,
+            checked_at,
+            posted_at_iso=latest.posted_at_iso,
+            seen_post_ids=seen,
+            scrape_date=target,
+        )
+    )
+    save_checkpoint_json(cfg.checkpoint_path, checkpoint, add_updated=False)
+    console.print(
+        f"[green]JSONL[/green] — appended {len(new_posts)} post(s) → {cfg.output_jsonl_path}"
+    )
+    return 0
+
+
 def run_fb_page_scrape(cfg: FbPageConfig | None = None, console: Console | None = None) -> int:
     cfg = cfg or load_fb_page_config()
     console = console or Console()
 
-    console.rule("[bold cyan]Facebook – Profile (latest post)[/bold cyan]")
+    mode_label = "daily posts (today)" if cfg.scrape_mode == "daily" else "latest post"
+    console.rule(f"[bold cyan]Facebook – Profile ({mode_label})[/bold cyan]")
     console.print(f"[dim]Profile: {cfg.profile_url}[/dim]")
+    console.print(f"[dim]Mode: {cfg.scrape_mode}[/dim]")
     console.print(f"[dim]JSONL: {cfg.output_jsonl_path}[/dim]")
     console.print(f"[dim]Images: {cfg.images_dir}[/dim]")
 
@@ -93,7 +225,7 @@ def run_fb_page_scrape(cfg: FbPageConfig | None = None, console: Console | None 
 
     checkpoint: dict[str, Any] = load_json(
         cfg.checkpoint_path,
-        default={"profile_url": cfg.profile_url, "last_post_id": None},
+        default={"profile_url": cfg.profile_url, "last_post_id": None, "seen_post_ids": []},
     )
     last_post_id = checkpoint.get("last_post_id")
     checked_at = _checked_at()
@@ -107,14 +239,23 @@ def run_fb_page_scrape(cfg: FbPageConfig | None = None, console: Console | None 
                     "Set FB_HEADLESS=false to complete captcha manually.[/red]"
                 )
                 return 1
+
             extract_holder: list[FbTopPost] = []
             extract_note_holder: list[str] = []
             page = fb_fetch_profile(
                 session, cfg, console, extract_holder, extract_note_holder
             )
             note = extract_note_holder[0] if extract_note_holder else ""
+
+            if cfg.scrape_mode == "daily":
+                code = _run_daily_scrape(
+                    session, cfg, page, extract_holder, note, checkpoint, checked_at, console
+                )
+                fb_logout(session, cfg, console)
+                return code
+
             if note:
-                if note.startswith("other_posts"):
+                if note.startswith("other_posts") or note.startswith("daily"):
                     console.print(f"[green]Using Other posts section[/green] [dim]({note})[/dim]")
                 elif "no_other_posts_marker" in note:
                     console.print(
@@ -157,19 +298,11 @@ def run_fb_page_scrape(cfg: FbPageConfig | None = None, console: Console | None 
                 fb_logout(session, cfg, console)
                 return 0
 
-            image_paths: list[str] = []
-            if cfg.download_images and post.image_urls:
-                saved = download_post_images(session, cfg, post.post_id, post.image_urls)
-                image_paths = [repo_relative_path(p) for p in saved]
-                if saved:
-                    console.print(f"[green]Images[/green] — {len(saved)} file(s) → {cfg.images_dir}")
-                else:
-                    console.print("[yellow]Image download failed or returned no files.[/yellow]")
-
-            record = build_post_record(cfg, post, image_paths)
-            append_fb_post_jsonl(cfg.output_jsonl_path, record)
+            _persist_post(session, cfg, post, console)
             console.print(f"[green]JSONL[/green] — appended → {cfg.output_jsonl_path}")
 
+            seen = load_seen_post_ids(checkpoint, cfg.output_jsonl_path)
+            seen.add(post.post_id)
             checkpoint.update(
                 build_checkpoint_update(
                     cfg.profile_url,
@@ -177,6 +310,7 @@ def run_fb_page_scrape(cfg: FbPageConfig | None = None, console: Console | None 
                     post.posted_at,
                     checked_at,
                     posted_at_iso=post.posted_at_iso,
+                    seen_post_ids=seen,
                 )
             )
             save_checkpoint_json(cfg.checkpoint_path, checkpoint, add_updated=False)

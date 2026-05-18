@@ -8,6 +8,11 @@ class FbPageConfig:
     email: str
     password: str
     scrapling_mode: str
+    scrape_mode: str
+    scrape_timezone: str
+    daily_max_age_hours: int
+    max_posts_per_run: int
+    daily_scroll_passes: int
     headless: bool
     profile_use_all_tab: bool
     debug_save_html: bool

@@ -17,6 +17,7 @@ from src.scraper.parsers.fb_post_urls import (
     extract_post_id_from_href,
     safe_post_id,
 )
+from src.scraper.parsers.fb_post_dates import parse_hours_ago
 from src.scraper.parsers.fb_profile_posts import (
     _base_url,
     _collect_image_urls,
@@ -29,6 +30,7 @@ _REL_TIME_IN_TEXT = re.compile(
     r"\b(\d+[hdmws]|\d+\s*(min|mins|minutes?|hr|hrs|hours?|days?)|just now|yesterday)\b",
     re.I,
 )
+_COMPACT_HM = re.compile(r"^(\d+)([hdm])$", re.I)
 
 _STORY_DESCRIPTION = '[data-ad-rendering-role="description"]'
 _STORY_MESSAGE = '[data-ad-rendering-role="story_message"]'
@@ -77,6 +79,40 @@ def _story_text_from_root(root: Any) -> str:
     return "\n".join(chunks).strip()
 
 
+def _story_posted_label_from_root(root: Any) -> str | None:
+    """FB shows age beside the name: Liezl P Aquino · 2h · Public."""
+    for meta in root.css('[data-ad-rendering-role="meta"]'):
+        raw = " ".join(meta.css("::text").getall()).strip()
+        for piece in re.split(r"[·•|]", raw):
+            piece = piece.strip()
+            if not piece:
+                continue
+            if parse_hours_ago(piece) is not None:
+                return piece
+            if _COMPACT_HM.match(piece):
+                return piece
+    for abbr in root.css("abbr[title], abbr[aria-label]"):
+        val = (abbr.attrib.get("title") or abbr.attrib.get("aria-label") or "").strip()
+        if val and parse_hours_ago(val) is not None:
+            return val
+    for anchor in root.css('a[href*="/posts/"], a[href*="pfbid"]'):
+        label = " ".join(anchor.css("::text").getall()).strip()
+        if label and parse_hours_ago(label) is not None:
+            return label
+        if label and _COMPACT_HM.match(label):
+            return label
+    for anchor in root.css("a[href]"):
+        label = " ".join(anchor.css("::text").getall()).strip()
+        if label and _COMPACT_HM.match(label):
+            return label
+    match = _REL_TIME_IN_TEXT.search(
+        " ".join(root.css('[data-ad-rendering-role="meta"] ::text').getall())
+    )
+    if match:
+        return match.group(1)
+    return None
+
+
 def _story_has_timestamp(root: Any, text: str) -> bool:
     if root.css("time[datetime]"):
         return True
@@ -121,6 +157,8 @@ def build_post_from_story_root(root: Any, profile_url: str, *, html_fragment: st
             posted_at = posted_iso
             break
     if not posted_at:
+        posted_at = _story_posted_label_from_root(root)
+    if not posted_at:
         match = _REL_TIME_IN_TEXT.search(text)
         if match:
             posted_at = match.group(1)
@@ -136,32 +174,54 @@ def build_post_from_story_root(root: Any, profile_url: str, *, html_fragment: st
     )
 
 
+def _append_unique_root(roots: list[Any], seen_nodes: set[int], node: Any) -> None:
+    rid = id(node)
+    if rid in seen_nodes:
+        return
+    seen_nodes.add(rid)
+    roots.append(node)
+
+
 def _html_story_roots_after_other_posts(page: Any) -> list[Any]:
     roots: list[Any] = []
+    seen_nodes: set[int] = set()
     for label in other_posts_labels():
         markers = page.xpath(
             f'//*[contains(normalize-space(.), "{label}")][not(ancestor::*[@role="complementary"])]'
         )
         for marker in markers:
-            for node in marker.xpath("following::*[@aria-posinset][1]"):
-                roots.append(node)
-            for node in marker.xpath(
-                f"following::*{_STORY_DESCRIPTION}[1]/ancestor::*[@aria-posinset][1]"
+            for node in marker.xpath("following::*[@aria-posinset]"):
+                _append_unique_root(roots, seen_nodes, node)
+            for desc in marker.xpath(
+                f"following::*{_STORY_MESSAGE} | following::*{_STORY_DESCRIPTION}"
             ):
-                roots.append(node)
-            for node in marker.xpath(f"following::*{_STORY_DESCRIPTION}[1]"):
-                roots.append(node)
+                ancestors = desc.xpath("ancestor::*[@aria-posinset][1]")
+                if ancestors:
+                    _append_unique_root(roots, seen_nodes, ancestors[0])
+                else:
+                    _append_unique_root(roots, seen_nodes, desc)
     return roots
 
 
-def parse_story_after_other_posts(page: Any, profile_url: str) -> FbTopPost | None:
-    seen: set[int] = set()
+def parse_stories_after_other_posts(
+    page: Any,
+    profile_url: str,
+    *,
+    max_posts: int = 20,
+) -> list[FbTopPost]:
+    posts: list[FbTopPost] = []
+    seen_ids: set[str] = set()
     for root in _html_story_roots_after_other_posts(page):
-        rid = id(root)
-        if rid in seen:
-            continue
-        seen.add(rid)
         post = build_post_from_story_root(root, profile_url)
-        if post is not None:
-            return post
-    return None
+        if post is None or post.post_id in seen_ids:
+            continue
+        seen_ids.add(post.post_id)
+        posts.append(post)
+        if len(posts) >= max_posts:
+            break
+    return posts
+
+
+def parse_story_after_other_posts(page: Any, profile_url: str) -> FbTopPost | None:
+    posts = parse_stories_after_other_posts(page, profile_url, max_posts=1)
+    return posts[0] if posts else None

@@ -21,11 +21,20 @@ def load_fb_page_config() -> FbPageConfig:
     mode = (os.getenv("FB_SCRAPLING_MODE") or "stealth").strip().lower()
     headless = os.getenv("FB_HEADLESS", "true").strip().lower() != "false"
 
+    scrape_mode = (os.getenv("FB_SCRAPE_MODE") or "latest").strip().lower()
+    if scrape_mode not in ("latest", "daily"):
+        scrape_mode = "latest"
+
     return FbPageConfig(
         profile_url=profile_url,
         email=(os.getenv("FB_EMAIL") or "").strip(),
         password=(os.getenv("FB_PASSWORD") or "").strip(),
         scrapling_mode=mode,
+        scrape_mode=scrape_mode,
+        scrape_timezone=(os.getenv("FB_SCRAPE_TIMEZONE") or "Asia/Manila").strip(),
+        daily_max_age_hours=int(os.getenv("FB_DAILY_MAX_AGE_HOURS", "23")),
+        max_posts_per_run=int(os.getenv("FB_MAX_POSTS_PER_RUN", "20")),
+        daily_scroll_passes=int(os.getenv("FB_DAILY_SCROLL_PASSES", "6")),
         headless=headless,
         profile_use_all_tab=_truthy("FB_PROFILE_USE_ALL_TAB", "true"),
         debug_save_html=_truthy("FB_DEBUG_SAVE_HTML", "false"),

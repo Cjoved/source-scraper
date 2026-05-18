@@ -11,7 +11,10 @@ from rich.console import Console
 
 from src.models.fb_model import FbPageConfig, FbTopPost
 from src.scraper.parsers.fb_feed_helpers import other_posts_labels
-from src.scraper.parsers.fb_playwright_extract import extract_top_post_from_playwright
+from src.scraper.parsers.fb_playwright_extract import (
+    extract_daily_posts_from_playwright,
+    extract_top_post_from_playwright,
+)
 
 FB_LOGIN_URL = "https://www.facebook.com/login"
 FB_LOGOUT_URL = "https://www.facebook.com/logout.php"
@@ -244,13 +247,22 @@ def make_profile_page_action(
             pass
 
         if extract_holder is not None:
-            post, note = extract_top_post_from_playwright(page, cfg.profile_url)
+            extract_holder.clear()
+            if cfg.scrape_mode == "daily":
+                posts, note = extract_daily_posts_from_playwright(
+                    page,
+                    cfg.profile_url,
+                    max_posts=cfg.max_posts_per_run,
+                    scroll_passes=cfg.daily_scroll_passes,
+                )
+                extract_holder.extend(posts)
+            else:
+                post, note = extract_top_post_from_playwright(page, cfg.profile_url)
+                if post is not None:
+                    extract_holder.append(post)
             if extract_note_holder is not None:
                 extract_note_holder.clear()
                 extract_note_holder.append(note)
-            if post is not None:
-                extract_holder.clear()
-                extract_holder.append(post)
 
     return _action
 
