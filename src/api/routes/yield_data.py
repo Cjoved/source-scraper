@@ -132,14 +132,17 @@ def list_yield_rows(
 @router.get(
     "/yield/metadata",
     response_model=YieldMetadataResponse,
-    summary="Distinct filter values (years, semesters, regions, provinces)",
+    summary="Distinct filter values (years, semesters, regions, provinces, municipalities)",
     description=(
         "Returns the distinct values needed to populate filter widgets on the "
         "frontend (dropdowns, autocomplete). Served from an in-memory cache that "
         "is built at startup and rebuilt by `POST /v1/index/refresh-metadata`.\n\n"
         "**Use cases**\n\n"
-        "- Build the Region → Province cascading dropdown.\n"
+        "- Build the Region → Province → Municipality cascading dropdowns.\n"
         "- Determine valid year range for date pickers.\n\n"
+        "**Cascading keys**\n\n"
+        "- `provinces_by_region[region]` — province list for the selected region.\n"
+        "- `municipalities_by_region_province[region][province]` — municipality list.\n\n"
         "**Note**: empty arrays mean Qdrant has no data yet — run the indexer first.\n\n"
         "**Auth**: public tier."
     ),
@@ -161,6 +164,10 @@ def get_yield_metadata(
         semesters=semesters,
         regions=list(snapshot.regions),
         provinces_by_region={r: list(p) for r, p in snapshot.provinces_by_region.items()},
+        municipalities_by_region_province={
+            region: {province: list(municipalities) for province, municipalities in provinces.items()}
+            for region, provinces in snapshot.municipalities_by_region_province.items()
+        },
     )
 
 

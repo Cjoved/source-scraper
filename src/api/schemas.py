@@ -52,6 +52,7 @@ class YieldMetadataResponse(BaseModel):
     semesters: list[SemesterMetadata]
     regions: list[str]
     provinces_by_region: dict[str, list[str]]
+    municipalities_by_region_province: dict[str, dict[str, list[str]]]
 
 
 class YieldExtremum(BaseModel):

@@ -22,7 +22,9 @@ class MetadataSnapshot:
     semesters: tuple[SemesterMetadata, ...] = ()
     regions: tuple[str, ...] = ()
     provinces_by_region: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    municipalities: tuple[str, ...] = ()
+    municipalities_by_region_province: dict[str, dict[str, tuple[str, ...]]] = field(
+        default_factory=dict
+    )
 
     @property
     def regions_count(self) -> int:
@@ -34,7 +36,11 @@ class MetadataSnapshot:
 
     @property
     def municipalities_count(self) -> int:
-        return len(self.municipalities)
+        return sum(
+            len(municipalities)
+            for provinces in self.municipalities_by_region_province.values()
+            for municipalities in provinces.values()
+        )
 
     @property
     def years_count(self) -> int:
@@ -67,8 +73,8 @@ def build_snapshot_from_rows(rows: list[dict[str, object]]) -> MetadataSnapshot:
     """Compute a metadata snapshot from a list of normalized yield rows."""
     years: set[int] = set()
     regions: set[str] = set()
-    municipalities: set[str] = set()
     provinces_by_region: dict[str, set[str]] = {}
+    municipalities_by_region_province: dict[str, dict[str, set[str]]] = {}
 
     for row in rows:
         year_val = row.get("year")
@@ -83,13 +89,21 @@ def build_snapshot_from_rows(rows: list[dict[str, object]]) -> MetadataSnapshot:
             regions.add(region)
             if province:
                 provinces_by_region.setdefault(region, set()).add(province)
-        if municipality:
-            municipalities.add(municipality)
+                if municipality:
+                    municipalities_by_region_province.setdefault(region, {}).setdefault(
+                        province, set()
+                    ).add(municipality)
 
     return MetadataSnapshot(
         years=tuple(sorted(years)),
         semesters=_default_semesters(),
         regions=tuple(sorted(regions)),
         provinces_by_region={r: tuple(sorted(p)) for r, p in sorted(provinces_by_region.items())},
-        municipalities=tuple(sorted(municipalities)),
+        municipalities_by_region_province={
+            region: {
+                province: tuple(sorted(municipalities))
+                for province, municipalities in sorted(provinces.items())
+            }
+            for region, provinces in sorted(municipalities_by_region_province.items())
+        },
     )

@@ -58,6 +58,8 @@ class TestMetadataRoute(unittest.TestCase):
         self.assertIn(2020, body["years"])
         self.assertIn("CAR", body["regions"])
         self.assertIn("Abra", body["provinces_by_region"]["CAR"])
+        self.assertIn("Bangued", body["municipalities_by_region_province"]["CAR"]["Abra"])
+        self.assertIn("Bucay", body["municipalities_by_region_province"]["CAR"]["Abra"])
 
 
 class TestSummaryRoute(unittest.TestCase):
