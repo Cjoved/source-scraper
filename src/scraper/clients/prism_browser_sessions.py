@@ -8,7 +8,7 @@ from typing import Any
 from rich.console import Console
 
 from src.scraper.parsers.prism_browser_page import extract_body_text, page_title
-from src.scraper.prism_browser_config import PrismBrowserConfig
+from src.models.browser_model import PrismBrowserConfig
 from src.scraper.prism_urls import is_prism_dynamic_app
 
 

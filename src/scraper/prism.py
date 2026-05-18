@@ -5,6 +5,7 @@ Jobs (`PRISM_JOB`):
 - `export_yield_csv` / `export_yield` — bulk yield via HTTP POST (no browser).
 - `browser_csv` / `browser_tables_csv` — Scrapling page load → extract `<table>` → CSV
   (optional corpus via `PRISM_BROWSER_SAVE_CORPUS=true`).
+- `fb_page` — Facebook profile login → latest post + images → JSONL → logout.
 - (unset) — browser scrape; set `PRISM_BROWSER_TABLES_CSV=true` to also emit tables CSV.
 
 Install:
@@ -68,5 +69,10 @@ def run() -> None:
             in ("true", "1", "yes"),
         )
         run_browser_scrape(cfg)
+        return
+    if job == "fb_page":
+        from src.scraper.spiders.fb_page_runner import run_fb_page_job
+
+        run_fb_page_job()
         return
     run_browser_scrape()

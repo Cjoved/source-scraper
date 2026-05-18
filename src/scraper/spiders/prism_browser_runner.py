@@ -17,7 +17,8 @@ from src.scraper.clients.prism_browser_sessions import (
 )
 from src.scraper.parsers.prism_browser_page import collapse_blank_lines, safe_txt_name
 from src.scraper.parsers.prism_browser_tables import extract_tables_from_page
-from src.scraper.prism_browser_config import PrismBrowserConfig, load_prism_browser_config
+from src.models.browser_model import PrismBrowserConfig
+from src.scraper.prism_browser_config import load_prism_browser_config
 from src.scraper.prism_urls import normalize_prism_target_url, parse_seed_urls
 from src.services.checkpoint import load_json, save_checkpoint_json
 from src.utils.net import require_internet

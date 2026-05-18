@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import os
-import models.browser_model as browser_model
 
-
+from src.models import browser_model
 from src.services.config import data_path
 
 def _truthy(name: str, default: str = "false") -> bool:
