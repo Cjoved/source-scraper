@@ -151,9 +151,26 @@ FB_KEEP_IMAGES=true
 FB_DOWNLOAD_IMAGES=true
 FB_PROFILE_USE_ALL_TAB=true
 FB_DEBUG_SAVE_HTML=false
+
+# Daily mode: all posts from today (Asia/Manila), schedule ~11:30 PM
+FB_SCRAPE_MODE=daily
+FB_SCRAPE_TIMEZONE=Asia/Manila
+FB_MAX_POSTS_PER_RUN=20
+FB_DAILY_SCROLL_PASSES=4
+FB_DAILY_MAX_AGE_HOURS=23
 ```
 
-`FB_PROFILE_USE_ALL_TAB` opens the profile **All** tab (not `/posts`) and targets the first post under the **Other posts** divider (skips pinned posts and comment threads). Set `FB_DEBUG_SAVE_HTML=true` to write `data/prism_processed/fb_debug_last.html` when extraction finds no valid post.
+`FB_PROFILE_USE_ALL_TAB` opens the profile **All** tab (not `/posts`) and targets posts under the **Other posts** divider (skips pinned posts and comment threads).
+
+| Variable | Values | Purpose |
+|----------|--------|---------|
+| `FB_SCRAPE_MODE` | `latest` (default), `daily` | `latest` = one newest post; `daily` = all posts in the last N hours |
+| `FB_SCRAPE_TIMEZONE` | e.g. `Asia/Manila` | Timezone for age calculations |
+| `FB_DAILY_MAX_AGE_HOURS` | default `23` | Daily window: include `1h`…`23h` (and minutes); skip `1d`, `yesterday`, etc. |
+| `FB_MAX_POSTS_PER_RUN` | default `20` | Cap posts collected per run |
+| `FB_DAILY_SCROLL_PASSES` | default `4` | Scroll depth on profile before extract |
+
+Set `FB_DEBUG_SAVE_HTML=true` to write `data/prism_processed/fb_debug_last.html` when extraction finds no valid post.
 
 Outputs:
 
