@@ -40,6 +40,8 @@ source-scraper/
 └─ data/
 ```
 
+Structure reference: [docs/project-structure.md](docs/project-structure.md).
+
 ## Requirements
 
 - Python `>=3.12`
@@ -73,6 +75,7 @@ uv sync --extra api
 ```bash
 uv run python main.py                # default: scrape (same as before)
 uv run python main.py scrape         # explicit scrape mode
+uv run python main.py openstat       # OpenStatv2 compatibility runner
 uv run python main.py api            # start FastAPI via uvicorn
 uv run python main.py index --all    # run the Qdrant indexer
 
@@ -125,68 +128,9 @@ Outputs:
   - `data/prism_txt/`
 - `data/checkpoints/prism_checkpoint.json`
 
-### Mode 3: Facebook Profile (`fb_page`)
-
-Monitors a third-party Facebook profile for the **latest post only** (permalink + images). Uses auto-login, writes JSONL only when `post_id` changes, then logs out. Images stay on disk for a future AI orchestration step (not deleted by the scraper).
-
-`.env` example:
-
-```env
-PRISM_JOB=fb_page
-
-FB_PROFILE_URL=https://www.facebook.com/liezl.p.aquino
-FB_EMAIL=your_account@example.com
-FB_PASSWORD=your_password
-
-FB_SCRAPLING_MODE=stealth
-FB_HEADLESS=true
-FB_JS_SETTLE_SECONDS=10
-FB_LOGIN_DELAY_MIN=1.5
-FB_LOGIN_DELAY_MAX=3.5
-FB_LOGIN_TYPING_DELAY_MS=85
-FB_LOGIN_PAGE_WAIT=2.5
-FB_LOGIN_AFTER_SUBMIT_WAIT=4.0
-FB_LOGOUT_AFTER=true
-FB_KEEP_IMAGES=true
-FB_DOWNLOAD_IMAGES=true
-FB_PROFILE_USE_ALL_TAB=true
-FB_DEBUG_SAVE_HTML=false
-
-# Daily mode: all posts from today (Asia/Manila), schedule ~11:30 PM
-FB_SCRAPE_MODE=daily
-FB_SCRAPE_TIMEZONE=Asia/Manila
-FB_MAX_POSTS_PER_RUN=20
-FB_DAILY_SCROLL_PASSES=4
-FB_DAILY_MAX_AGE_HOURS=23
-```
-
-`FB_PROFILE_USE_ALL_TAB` opens the profile **All** tab (not `/posts`) and targets posts under the **Other posts** divider (skips pinned posts and comment threads).
-
-| Variable | Values | Purpose |
-|----------|--------|---------|
-| `FB_SCRAPE_MODE` | `latest` (default), `daily` | `latest` = one newest post; `daily` = all posts in the last N hours |
-| `FB_SCRAPE_TIMEZONE` | e.g. `Asia/Manila` | Timezone for age calculations |
-| `FB_DAILY_MAX_AGE_HOURS` | default `23` | Daily window: include `1h`…`23h` (and minutes); skip `1d`, `yesterday`, etc. |
-| `FB_MAX_POSTS_PER_RUN` | default `20` | Cap posts collected per run |
-| `FB_DAILY_SCROLL_PASSES` | default `4` | Scroll depth on profile before extract |
-
-Set `FB_DEBUG_SAVE_HTML=true` to write `data/prism_processed/fb_debug_last.html` when extraction finds no valid post.
-
-Outputs:
-
-- `data/prism_processed/fb_liezl_posts.jsonl`
-- `data/prism_processed/fb_liezl_images/{post_id}_{n}.jpg`
-- `data/checkpoints/fb_liezl_checkpoint.json`
-
-**Manual smoke:** `uv sync --extra browser`, `uv run scrapling install`, set `.env`, then `uv run python main.py scrape`. Run twice the same day; the second run should skip JSONL append if the latest post is unchanged.
-
-**Schedule (Windows, 5 PM Manila):** Task Scheduler → Daily 17:00 → action `uv run python main.py scrape` in the repo root (ensure `.env` has `PRISM_JOB=fb_page`). Use timezone `(UTC+08:00) Kuala Lumpur, Singapore`.
-
-**Risks:** Meta Terms restrict automated access; account checkpoints/captcha may require `FB_HEADLESS=false`. Use a dedicated Facebook account, not your primary profile.
-
 ## Environment Reference (Common)
 
-- `PRISM_JOB`: route selector (`export_yield_csv`, `export_yield`, `browser_csv`, `browser_tables_csv`, `fb_page`)
+- `PRISM_JOB`: route selector (`export_yield_csv`, `export_yield`, `browser_csv`, `browser_tables_csv`)
 - `PRISM_URL` / `PRISM_URLS`: required for browser jobs
 - `PRISM_SCRAPLING_MODE`: `fetch` | `stealth` | `dynamic`
 - `PRISM_CONTENT_SELECTOR`: optional CSS selector override for focused extraction
@@ -211,6 +155,33 @@ uv run uvicorn main:app --reload --port 8000
 ```
 
 Full endpoint reference and configuration in [docs/api.md](docs/api.md).
+Deployment plan: [docs/deploy.md](docs/deploy.md).
+
+## OpenStatv2 compatibility migration
+
+OpenStatv2 scraper modules are integrated under `src/openstat/` to preserve parity workflows
+while keeping canonical PRiSM flows in `src/scraper/`.
+
+Install optional dependencies for OpenStat compatibility:
+
+```bash
+uv sync --extra openstat
+uv run playwright install
+```
+
+Run OpenStat parity workflows:
+
+```bash
+uv run python main.py openstat
+```
+
+Migration artifacts:
+
+- `docs/migration/openstat-feature-inventory.md`
+- `docs/migration/openstat-acceptance-matrix.md`
+- `docs/migration/openstat-data-fixture-parity.md`
+- `docs/migration/openstat-file-map.md`
+- `docs/migration/openstat-rollback-and-manifest.md`
 
 ## Testing
 
@@ -228,11 +199,6 @@ uv run python -m unittest discover -s tests -p "test_*.py" -v
   - Use `uv run scrapling install` (not `uv scrapling install`).
 - **No tables in browser CSV**
   - Increase `PRISM_JS_SETTLE_SECONDS` or set `PRISM_CONTENT_SELECTOR` for current DOM.
-- **FB login fails / checkpoint page**
-  - Set `FB_HEADLESS=false`, complete any challenge manually, then retry.
-- **No post found on FB profile**
-  - Confirm you can see the timeline when logged in manually; profile may be private.
-
 ## Notes
 
 - Checkpoints are updated incrementally for long-running jobs.

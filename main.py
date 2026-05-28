@@ -4,6 +4,7 @@ Usage:
 
     uv run python main.py                # default: scrape (back-compat)
     uv run python main.py scrape         # explicit scrape mode
+    uv run python main.py openstat       # run OpenStatv2 parity workflows
     uv run python main.py api            # start FastAPI via uvicorn
     uv run python main.py index --all    # run the Qdrant indexer
     uv run uvicorn main:app              # uvicorn directly (uses re-exported `app`)
@@ -75,11 +76,18 @@ def _cmd_index(args: argparse.Namespace) -> int:
     return index_main(forwarded)
 
 
+def _cmd_openstat(_args: argparse.Namespace) -> int:
+    from src.openstat.runner import run as openstat_run
+
+    return openstat_run()
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="prism", description="PRiSM scraper, indexer, and API.")
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("scrape", help="Run the PRiSM scraper (job selected via PRISM_JOB).")
+    sub.add_parser("openstat", help="Run OpenStatv2 compatibility workflows.")
 
     api_parser = sub.add_parser("api", help="Start the FastAPI service via uvicorn.")
     api_parser.add_argument("--host", default="0.0.0.0")
@@ -110,7 +118,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_api(args)
     if args.command == "index":
         return _cmd_index(args)
-
+    if args.command == "openstat":
+        return _cmd_openstat(args)
     parser.print_help()
     return 2
 

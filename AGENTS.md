@@ -1,17 +1,24 @@
 # Source Scraper Agent Guide
 
 ## Scope
-- This repository scrapes PRiSM data and optional Facebook profile posts:
+- This repository scrapes PRiSM data:
   - `export_yield_csv` / `export_yield`: HTTP API bulk export to CSV.
   - Browser pipelines (`browser_csv` / default): Scrapling page scraping, optional table-to-CSV and corpus output.
-  - `fb_page`: Facebook profile login → latest post + images → JSONL → logout (for downstream AI).
+  - OpenStat compatibility workflows via `python main.py openstat` (PhilRice, PhilRice News, PinoyRice, OpenSTAT, IRRI).
 
 ## Project Layout
 - `main.py`: entrypoint.
-- `src/scraper/`: orchestration, clients, parsers, spiders.
+- `src/scraper/`: canonical PRiSM orchestration, clients, parsers, spiders.
+- `src/openstat/`: OpenStat compatibility package.
+  - `src/openstat/scrapers/`: OpenStat workflow scrapers (PhilRice, News, PinoyRice, OpenSTAT, IRRI).
+  - `src/openstat/services/`: OpenStat post-processing pipelines.
+  - `src/openstat/agri_corpus/`: text/pdf/cpt helpers used by OpenStat services.
+  - `src/openstat/utils/`: OpenStat-specific network/db helpers.
+  - `src/openstat/main.py`: OpenStat workflow dispatcher.
 - `src/formatter/`: CSV shaping/writers.
 - `src/services/`: config, checkpoints, logging.
 - `src/utils/`: network/retry/url/date helpers.
+- `docs/migration/`: OpenStat migration runbooks, acceptance matrix, and rollback manifest.
 - `tests/`: unit tests.
 - `data/`: runtime outputs/checkpoints.
 
@@ -20,6 +27,7 @@
 - Install browser deps: `uv sync --extra browser`
 - Install Scrapling fetchers: `uv run scrapling install`
 - Run app: `uv run python main.py`
+- Run OpenStat compatibility workflows: `uv run python main.py openstat`
 - Run tests: `uv run python -m unittest discover -s tests -p "test_*.py" -v`
 
 ## Environment Presets
@@ -29,10 +37,6 @@
   - `PRISM_JOB=browser_csv`
   - `PRISM_URL=https://prism.philrice.gov.ph/dataproducts/`
   - `PRISM_BROWSER_SAVE_CORPUS=false`
-- Facebook profile mode:
-  - `PRISM_JOB=fb_page`
-  - `FB_PROFILE_URL=https://www.facebook.com/liezl.p.aquino`
-  - `FB_EMAIL` / `FB_PASSWORD` (never commit)
 
 ## Output Contracts
 - Yield export CSV: `data/prism_processed/prism_yield_export.csv`
@@ -41,10 +45,6 @@
 - Checkpoints:
   - `data/checkpoints/prism_yield_export_checkpoint.json`
   - `data/checkpoints/prism_checkpoint.json`
-  - `data/checkpoints/fb_liezl_checkpoint.json`
-- Facebook JSONL + images:
-  - `data/prism_processed/fb_liezl_posts.jsonl`
-  - `data/prism_processed/fb_liezl_images/` (kept until a future AI/cleanup step)
 
 ## Coding Rules
 - Keep scraper layering explicit:
