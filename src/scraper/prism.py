@@ -68,5 +68,11 @@ def run() -> None:
             in ("true", "1", "yes"),
         )
         run_browser_scrape(cfg)
+        from src.services.prism import run as run_prism_process
+
+        run_prism_process()
         return
     run_browser_scrape()
+    from src.services.prism import run as run_prism_process
+
+    run_prism_process()
