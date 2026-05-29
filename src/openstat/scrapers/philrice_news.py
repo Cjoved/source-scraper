@@ -3,6 +3,7 @@ PhilRice News scraper – bawat article: text mula title hanggang (kasama) ang
 "HOW DOES THIS POST MAKE YOU FEEL?" at mga percentage. Filename = philrice_news_MM-DD-YY.txt (posted date).
 """
 from playwright.sync_api import sync_playwright
+from src.openstat.agri_corpus.scraper_utils import load_checkpoint, save_checkpoint
 from src.openstat.utils import require_internet
 from src.openstat.config import data_path
 from dotenv import load_dotenv
@@ -10,7 +11,6 @@ from rich.console import Console
 from datetime import datetime
 import os
 import re
-import json
 import time
 
 try:
@@ -111,22 +111,12 @@ def _safe_filename_from_date(posted_mm_dd_yy: str, same_day_index: int) -> str:
 
 
 def _load_checkpoint() -> set:
-    if not os.path.isfile(CHECKPOINT_PATH):
-        return set()
-    try:
-        with open(CHECKPOINT_PATH, "r", encoding="utf-8") as f:
-            return set(json.load(f).get("scraped_urls", []))
-    except Exception:
-        return set()
+    data = load_checkpoint(CHECKPOINT_PATH, default={"scraped_urls": []})
+    return set(data.get("scraped_urls", []))
 
 
 def _save_checkpoint(scraped_urls: list):
-    try:
-        os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
-        with open(CHECKPOINT_PATH, "w", encoding="utf-8") as f:
-            json.dump({"scraped_urls": scraped_urls, "updated": datetime.now().isoformat()}, f, indent=2)
-    except Exception as e:
-        console.print(f"[dim]Checkpoint save: {e}[/dim]")
+    save_checkpoint(CHECKPOINT_PATH, {"scraped_urls": scraped_urls})
 
 
 def _collect_news_entries_on_page(page) -> list[tuple[str, str]]:

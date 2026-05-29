@@ -21,6 +21,7 @@ from src.models.browser_model import PrismBrowserConfig
 from src.scraper.prism_browser_config import load_prism_browser_config
 from src.scraper.prism_urls import normalize_prism_target_url, parse_seed_urls
 from src.services.checkpoint import load_json, save_checkpoint_json
+from src.utils.jsonl import append_jsonl
 from src.utils.net import require_internet
 from src.utils.url_id import safe_id_from_url
 
@@ -33,15 +34,6 @@ try:
 except ImportError:
     HAS_SCRAPLING = False
     DynamicSession = FetcherSession = StealthyFetcher = StealthySession = None  # type: ignore[misc, assignment]
-
-
-def append_jsonl(record: dict[str, Any], path: Any) -> None:
-    from pathlib import Path
-
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def urls_to_process(urls: list[str], scraped: set[str], cfg: PrismBrowserConfig, console: Console) -> list[tuple[str, str]]:

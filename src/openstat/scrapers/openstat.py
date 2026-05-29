@@ -1,6 +1,6 @@
 """
 OpenSTAT (PSA) scraper – Agri-Price data from openstat.psa.gov.ph.
-Uses Playwright; Excel download → process (src.services.openstat) → CSV + MySQL.
+Uses Playwright; Excel download → process (src.openstat.services.openstat) → CSV/CPT under data/openstat_processed/ + MySQL.
 """
 from playwright.sync_api import sync_playwright
 from src.openstat.utils import (
@@ -10,13 +10,14 @@ from src.openstat.utils import (
     get_cloudflare_cookies,
     store_data_in_mysql,
 )
+from src.openstat.agri_corpus.scraper_utils import load_checkpoint, save_checkpoint
 from src.openstat.config import data_path
+from src.openstat.env_flags import openstat_enabled
 from src.openstat.services.openstat import download_and_process_excel
 from dotenv import load_dotenv
 from rich.console import Console
 from datetime import datetime
 import os
-import json
 import pandas as pd
 import time
 
@@ -114,23 +115,15 @@ MAX_YEARS_PER_SELECTION_SAFETY = 50
 
 
 def _load_checkpoint():
-    if not os.path.isfile(CHECKPOINT_PATH):
-        return set()
-    try:
-        with open(CHECKPOINT_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return set(data.get("completed_url_indices", []))
-    except Exception:
-        return set()
+    data = load_checkpoint(CHECKPOINT_PATH, default={"completed_url_indices": []})
+    return set(data.get("completed_url_indices", []))
 
 
 def _save_checkpoint(completed_url_indices):
-    try:
-        os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
-        with open(CHECKPOINT_PATH, "w", encoding="utf-8") as f:
-            json.dump({"completed_url_indices": sorted(completed_url_indices)}, f, indent=2)
-    except Exception as e:
-        console.print(f"[dim]Could not save checkpoint: {e}[/dim]")
+    save_checkpoint(
+        CHECKPOINT_PATH,
+        {"completed_url_indices": sorted(completed_url_indices)},
+    )
 
 
 def _page_is_cloudflare_522(page):
@@ -141,14 +134,9 @@ def _page_is_cloudflare_522(page):
         return False
 
 
-def _openstat_enabled() -> bool:
-    v = (os.getenv("OPENSTAT") or "true").strip().lower()
-    return v in ("true", "1", "yes")
-
-
 @require_internet
 def scrape_all():
-    if not _openstat_enabled():
+    if not openstat_enabled():
         console.print("[yellow]OPENSTAT=false. OpenSTAT scraper disabled. Set OPENSTAT=true in .env to run.[/yellow]")
         return
     if not urls or not any(u and u.strip() for u in urls):
@@ -383,15 +371,18 @@ def scrape_all():
             final_df["Commodity"] = final_df.get("Commodity Type", "N/A")
         col_order = ["Geolocation", "Commodity Type", "Commodity", "Year", "Month", "Price"]
         final_df = final_df[[c for c in col_order if c in final_df.columns]]
-        output_dir = os.path.join(os.path.expanduser("~"), "Desktop", "Agri-Price-Data_Files")
-        os.makedirs(output_dir, exist_ok=True)
+        processed_dir = data_path("openstat_processed")
+        os.makedirs(processed_dir, exist_ok=True)
 
-        output_file = os.path.join(output_dir, f"openstat_with_commodity_{timestamp}.csv")
-        final_df.to_csv(output_file, index=False)
-        console.print(f"[bold green]✔ Saved: {output_file}[/bold green]")
+        table_csv = os.path.join(processed_dir, "openstat_table.csv")
+        final_df.to_csv(table_csv, index=False)
+        console.print(f"[bold green]✔ Saved table CSV: {table_csv}[/bold green]")
+
+        from src.services.openstat_cpt import run as run_openstat_cpt
+
+        run_openstat_cpt(final_df)
 
         store_data_in_mysql(final_df)
-        console.print(f"[bold cyan]CSV location: {os.path.abspath(output_dir)}[/bold cyan]")
     else:
         console.print("[bold red]No data was scraped![/bold red]")
 

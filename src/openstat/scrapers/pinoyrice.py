@@ -33,6 +33,7 @@ import urllib.parse
 from pathlib import Path
 
 from src.openstat.agri_corpus.scraper_utils import normalize_url, load_checkpoint, save_checkpoint
+from src.utils.jsonl import append_jsonl
 
 try:
     from playwright_stealth import stealth_sync
@@ -104,12 +105,6 @@ def _load_checkpoint():
 
 def _save_checkpoint(data: dict):
     save_checkpoint(CHECKPOINT_PATH, data)
-
-
-def _append_jsonl(record: dict, path: str):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def _safe_page_filename(url: str) -> str:
@@ -697,7 +692,7 @@ def run():
                         "title": title,
                         "doc_id": _doc_id(url),
                     }
-                    _append_jsonl(record, PINOYRICE_JSONL)
+                    append_jsonl(record, PINOYRICE_JSONL)
                     _write_per_file_text(url, raw_text)
                     scraped.add(url)
                     console.print(f"[green]  Text: {len(text)} chars[/green]")
@@ -766,7 +761,7 @@ def run():
                             "title": title,
                             "doc_id": _doc_id(url),
                         }
-                        _append_jsonl(record, PINOYRICE_JSONL)
+                        append_jsonl(record, PINOYRICE_JSONL)
                         _write_per_file_text(url, raw_text)
                         scraped.add(url)
                         console.print(f"[green]  Text: {len(text)} chars[/green]")
@@ -844,7 +839,7 @@ def run():
                             "title": title,
                             "doc_id": _doc_id(url),
                         }
-                        _append_jsonl(record, PINOYRICE_JSONL)
+                        append_jsonl(record, PINOYRICE_JSONL)
                         _write_per_file_text(url, raw_text)
                         scraped.add(url)
                 except Exception:
@@ -862,15 +857,6 @@ def run():
     console.print(f"Text → [cyan]{PINOYRICE_JSONL}[/cyan]")
     console.print(f"PDFs → [cyan]{os.path.abspath(PINOYRICE_PDFS_DIR)}[/cyan]")
     console.print(f"Scraped pages: {len(scraped)}, Downloaded PDFs: {len(downloaded)}")
-
-    # After scrape: run processing (text + PDF) so corpus/chunks and per-file JSONs are up to date
-    try:
-        from src.openstat.services.pinoyrice import run as run_processing
-        run_processing()
-    except Exception as e:
-        console.print(f"[yellow]Processing (text+PDF) failed: {e}[/yellow]")
-        console.print("[dim]Run manually: python -m src.services.pinoyrice[/dim]")
-
 
 if __name__ == "__main__":
     run()
