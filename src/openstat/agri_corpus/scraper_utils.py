@@ -1,12 +1,13 @@
 """
 Shared scraper helpers: URL normalization, checkpoint load/save, safe filenames.
 """
-import json
-import os
 import re
 import urllib.parse
-from datetime import datetime
+from pathlib import Path
 from typing import Any
+
+from src.services.checkpoint import load_checkpoint as _load_checkpoint
+from src.services.checkpoint import save_checkpoint as _save_checkpoint
 
 
 def normalize_url(href: str, base: str) -> str | None:
@@ -21,29 +22,14 @@ def normalize_url(href: str, base: str) -> str | None:
     return urllib.parse.urljoin(base, href)
 
 
-def load_checkpoint(path: str, default: Any = None) -> Any:
+def load_checkpoint(path: str | Path, default: Any = None) -> Any:
     """Load JSON checkpoint; return default if missing or invalid."""
-    if default is None:
-        default = {"scraped_urls": [], "downloaded_urls": []}
-    if not os.path.isfile(path):
-        return default
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return default
+    return _load_checkpoint(path, default)
 
 
-def save_checkpoint(path: str, data: dict, add_updated: bool = True) -> None:
+def save_checkpoint(path: str | Path, data: dict, add_updated: bool = True) -> None:
     """Write checkpoint JSON. Optionally set data['updated'] to now."""
-    if add_updated:
-        data = {**data, "updated": datetime.now().isoformat()}
-    try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-    except Exception:
-        pass
+    _save_checkpoint(path, data, add_updated=add_updated)
 
 
 def safe_filename_from_url(url: str, max_len: int = 180, suffix: str = ".pdf") -> str:

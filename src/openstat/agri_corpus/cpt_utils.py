@@ -1,32 +1,5 @@
-"""
-CPT (Continued Pre-Training) record format.
-"""
+"""CPT record helpers — canonical implementation in src.utils.cpt."""
 
+from src.utils.cpt import make_cpt_record
 
-def make_cpt_record(
-    text: str,
-    source: str,
-    doc_id: str,
-    *,
-    url: str | None = None,
-    title: str | None = None,
-    filename: str | None = None,
-    page: int | None = None,
-) -> dict:
-    """Build one CPT chunk record."""
-    rec = {
-        "text": text,
-        "input": text,
-        "content": text,
-        "source": source,
-        "doc_id": doc_id,
-    }
-    if url is not None:
-        rec["url"] = url
-    if title is not None:
-        rec["title"] = title
-    if filename is not None:
-        rec["filename"] = filename
-    if page is not None:
-        rec["page"] = page
-    return rec
+__all__ = ["make_cpt_record"]
