@@ -1,0 +1,7 @@
+# Core dependencies
+-r requirements.txt
+
+# Browser scraping dependencies for PRISM and OpenStat flows
+scrapling[all]>=0.4.0
+tzdata>=2024.1
+playwright>=1.54

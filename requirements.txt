@@ -1,0 +1,5 @@
+pydantic>=2.13.4
+parsel>=1.9.0
+python-dotenv>=1.0
+requests>=2.31
+rich>=13.0

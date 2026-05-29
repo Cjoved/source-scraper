@@ -55,11 +55,24 @@ Install core dependencies:
 uv sync
 ```
 
+Alternative pip install path:
+
+```bash
+pip install -r requirements.txt
+```
+
 Install browser stack (required for Scrapling browser jobs):
 
 ```bash
 uv sync --extra browser
 uv run scrapling install
+```
+
+Alternative pip path for PRISM/browser:
+
+```bash
+pip install -r requirements-prism.txt
+playwright install
 ```
 
 Install API stack (required for the FastAPI service + indexer):

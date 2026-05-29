@@ -16,8 +16,9 @@
   - `src/openstat/utils/`: OpenStat-specific network/db helpers.
   - `src/openstat/main.py`: OpenStat workflow dispatcher.
 - `src/formatter/`: CSV shaping/writers.
-- `src/services/`: config, checkpoints, logging.
-- `src/utils/`: network/retry/url/date helpers.
+- `src/services/`: config, checkpoints, logging, PRiSM/OpenSTAT processing (`prism.py`, `openstat_cpt.py`).
+- `src/utils/`: canonical shared helpers (`net`, `url_id`, `text_chunk`, `cpt`, `jsonl`).
+- OpenStat `agri_corpus/` re-exports `chunk_text`, `make_cpt_record`, `safe_id_from_url` from `src/utils/`; site-specific PDF/txt helpers stay there.
 - `docs/migration/`: OpenStat migration runbooks, acceptance matrix, and rollback manifest.
 - `tests/`: unit tests.
 - `data/`: runtime outputs/checkpoints.

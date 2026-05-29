@@ -16,6 +16,7 @@ exactly like `uvicorn src.api.app:app`.
 from __future__ import annotations
 
 import argparse
+import importlib
 import sys
 from typing import Any
 
@@ -28,12 +29,13 @@ def _load_app() -> Any:
     """Import the FastAPI app lazily so `python main.py scrape` doesn't pull in API deps."""
     global _app
     if _app is None:
-        from fastapi.responses import RedirectResponse
-
-        from src.api.app import app as fastapi_app
+        responses = importlib.import_module("starlette.responses")
+        RedirectResponse = getattr(responses, "RedirectResponse")
+        api_module = importlib.import_module("src.api.app")
+        fastapi_app = getattr(api_module, "app")
 
         @fastapi_app.get("/", include_in_schema=False)
-        def _root() -> RedirectResponse:
+        def _root() -> Any:
             """Redirect base URL to the versioned docs for convenience."""
             return RedirectResponse(url="/v1/docs")
 

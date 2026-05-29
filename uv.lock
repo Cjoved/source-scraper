@@ -2441,6 +2441,7 @@ name = "source-scraper"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "pandas" },
     { name = "parsel" },
     { name = "pydantic" },
     { name = "python-dotenv" },
@@ -2483,6 +2484,7 @@ requires-dist = [
     { name = "mysql-connector-python", marker = "extra == 'openstat'", specifier = ">=9.0" },
     { name = "numpy", marker = "extra == 'openstat'", specifier = ">=1.26" },
     { name = "openpyxl", marker = "extra == 'openstat'", specifier = ">=3.1" },
+    { name = "pandas", specifier = ">=3.0.3" },
     { name = "pandas", marker = "extra == 'openstat'", specifier = ">=2.2" },
     { name = "parsel", specifier = ">=1.9.0" },
     { name = "pdfplumber", marker = "extra == 'openstat'", specifier = ">=0.11" },
