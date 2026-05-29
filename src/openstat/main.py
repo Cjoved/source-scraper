@@ -12,37 +12,16 @@ Control via .env: PHILRICE, PHILRICE_NEWS, PINOYRICE, OPENSTAT, IRRI, PRISM (tru
 import os
 from dotenv import load_dotenv
 
+from src.openstat.env_flags import (
+    irri_enabled,
+    openstat_enabled,
+    philrice_enabled,
+    philrice_news_enabled,
+    pinoyrice_enabled,
+    prism_enabled,
+)
+
 load_dotenv()
-
-
-def _philrice_enabled() -> bool:
-    v = (os.getenv("PHILRICE") or "false").strip().lower()
-    return v in ("true", "1", "yes")
-
-
-def _pinoyrice_enabled() -> bool:
-    v = (os.getenv("PINOYRICE") or "false").strip().lower()
-    return v in ("true", "1", "yes")
-
-
-def _philrice_news_enabled() -> bool:
-    v = (os.getenv("PHILRICE_NEWS") or "false").strip().lower()
-    return v in ("true", "1", "yes")
-
-
-def _openstat_enabled() -> bool:
-    v = (os.getenv("OPENSTAT") or "true").strip().lower()
-    return v in ("true", "1", "yes")
-
-
-def _irri_enabled() -> bool:
-    v = (os.getenv("IRRI") or "false").strip().lower()
-    return v in ("true", "1", "yes")
-
-
-def _prism_enabled() -> bool:
-    v = (os.getenv("PRISM") or "false").strip().lower()
-    return v in ("true", "1", "yes")
 
 
 def main():
@@ -50,12 +29,12 @@ def main():
     console = Console()
 
     console.rule("[bold]Main – PhilRice / PhilRice News / PinoyRice / OpenSTAT / IRRI / Prism (isa lang per run)[/bold]")
-    philrice = _philrice_enabled()
-    philrice_news = _philrice_news_enabled()
-    pinoyrice = _pinoyrice_enabled()
-    openstat = _openstat_enabled()
-    irri = _irri_enabled()
-    prism = _prism_enabled()
+    philrice = philrice_enabled()
+    philrice_news = philrice_news_enabled()
+    pinoyrice = pinoyrice_enabled()
+    openstat = openstat_enabled()
+    irri = irri_enabled()
+    prism = prism_enabled()
     console.print(f"[dim]PHILRICE={os.getenv('PHILRICE', 'false')}  PHILRICE_NEWS={os.getenv('PHILRICE_NEWS', 'false')}  PINOYRICE={os.getenv('PINOYRICE', 'false')}  OPENSTAT={os.getenv('OPENSTAT', 'true')}  IRRI={os.getenv('IRRI', 'false')}  PRISM={os.getenv('PRISM', 'false')}[/dim]")
 
     if philrice and (philrice_news or pinoyrice or openstat or irri or prism):
@@ -92,10 +71,16 @@ def main():
         console.rule("[bold cyan]PinoyRice – Scrape (text + PDF)[/bold cyan]")
         from src.openstat.scrapers import pinoyrice as scraper_pinoyrice
         scraper_pinoyrice.run()
+        console.rule("[bold cyan]PinoyRice – Process (.txt/.pdf -> CPT JSON)[/bold cyan]")
+        from src.openstat.services import pinoyrice as processing_pinoyrice
+        processing_pinoyrice.run()
     elif openstat:
         console.rule("[bold cyan]OpenSTAT – Scrape[/bold cyan]")
         from src.openstat.scrapers import openstat as openstat_scraper
         openstat_scraper.scrape_all()
+        console.rule("[bold cyan]OpenSTAT – Process (table + CPT)[/bold cyan]")
+        from src.openstat.services import openstat as processing_openstat
+        processing_openstat.run()
     elif irri:
         console.rule("[bold cyan]IRRI Philippines – Scrape (text + PDFs)[/bold cyan]")
         from src.openstat.scrapers import irri as irri_scraper

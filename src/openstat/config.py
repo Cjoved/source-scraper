@@ -1,15 +1,13 @@
 """
-Project paths: single source of truth for PROJECT_ROOT and data/ output.
-All scrapers and services use DATA_DIR for inputs/outputs.
+Project paths: delegates to src.services.config (single source of truth).
+OpenStat call sites expect str paths for os.path compatibility.
 """
-import os
+from src.services import config as _config
 
-# Project root = source-scraper repository root.
-_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(os.path.dirname(_THIS_DIR))
-DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+PROJECT_ROOT = str(_config.PROJECT_ROOT)
+DATA_DIR = str(_config.DATA_DIR)
 
 
 def data_path(*parts: str) -> str:
     """Build path under data/ (e.g. data_path('philrice_processed', 'per_file'))."""
-    return os.path.join(DATA_DIR, *parts)
+    return str(_config.data_path(*parts))
