@@ -1,8 +1,15 @@
-import functools
-import socket
-import requests
 import time
+
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+from src.utils.net import is_internet_available, require_internet, wait_for_internet
+
+__all__ = [
+    "wait_for_selector_with_retry",
+    "is_internet_available",
+    "wait_for_internet",
+    "require_internet",
+]
 
 
 def wait_for_selector_with_retry(page, selector, timeout=30000, retry_interval=5, max_attempts=None):
@@ -28,46 +35,3 @@ def wait_for_selector_with_retry(page, selector, timeout=30000, retry_interval=5
             attempt += 1
             if max_attempts and attempt > max_attempts:
                 raise Exception(f"Max attempts reached for selector: {selector}")
-
-
-def is_internet_available(retries=3, initial_timeout=3, max_timeout=15):
-    """Checks if internet is available under all conditions with retries and fallback."""
-    hosts = ["8.8.8.8", "1.1.1.1"]
-    port = 53
-    timeout = initial_timeout
-    for attempt in range(retries):
-        for host in hosts:
-            try:
-                socket.setdefaulttimeout(timeout)
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.connect((host, port))
-                sock.close()
-                return True
-            except (socket.timeout, socket.error):
-                continue
-        try:
-            response = requests.get("https://www.google.com", timeout=timeout)
-            if response.status_code == 200:
-                return True
-        except (requests.ConnectionError, requests.Timeout):
-            pass
-        timeout = min(timeout * 2, max_timeout)
-        time.sleep(2)
-    return False
-
-
-def wait_for_internet(retry_interval=5):
-    """Waits for internet connection."""
-    while not is_internet_available():
-        print(f"Internet lost! Retrying in {retry_interval} seconds...")
-        time.sleep(retry_interval)
-    print("Network found!")
-
-
-def require_internet(func):
-    """Decorator to check internet before running a function."""
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        wait_for_internet()
-        return func(*args, **kwargs)
-    return wrapper
