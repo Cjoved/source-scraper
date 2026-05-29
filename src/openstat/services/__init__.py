@@ -1,7 +1,3 @@
-from . import philrice
-from . import philrice_news
-from . import pinoyrice
-from . import openstat
-from . import irri
+"""OpenStat processing services (import submodules directly, e.g. `from src.openstat.services import irri`)."""
 
 __all__ = ["philrice", "philrice_news", "pinoyrice", "openstat", "irri"]

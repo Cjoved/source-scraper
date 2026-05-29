@@ -11,8 +11,7 @@ from rich.console import Console
 from dotenv import load_dotenv
 
 from src.openstat.config import data_path
-from src.openstat.agri_corpus.text_utils import chunk_text
-from src.openstat.agri_corpus.cpt_utils import make_cpt_record
+from src.openstat.agri_corpus.txt_cpt import text_to_cpt_records
 
 load_dotenv()
 console = Console()
@@ -122,15 +121,7 @@ def _clean_irri_text(raw: str) -> tuple[str, str, str]:
 
 
 def txt_to_cpt_records(txt_path: str) -> list[dict]:
-    """Read .txt → parse → clean → CPT records.
-
-    Format intentionally ginaya sa PhilRice News:
-    - text / input / content: cleaned body lang
-    - source: "irri"
-    - doc_id: slug (galing sa cleaned title)
-    - filename: original .txt filename
-    (Walang extra url/title fields para pareho ang schema.)
-    """
+    """Read .txt → parse → clean → CPT records."""
     path = Path(txt_path)
     if not path.is_file() or path.suffix.lower() != ".txt":
         return []
@@ -141,22 +132,18 @@ def txt_to_cpt_records(txt_path: str) -> list[dict]:
         return []
     if not raw:
         return []
-    url, clean_title, text = _clean_irri_text(raw)
+    _url, clean_title, text = _clean_irri_text(raw)
     if not text or len(text) < MIN_CHUNK_CHARS:
         return []
     base_id = _safe_doc_id(clean_title, max_len=100)
-    extra = {"filename": path.name}
-    if MAX_CHUNK_CHARS > 0 and len(text) > MAX_CHUNK_CHARS:
-        chunks = chunk_text(text, MAX_CHUNK_CHARS)
-        records = []
-        for j, ch in enumerate(chunks):
-            if len(ch) < MIN_CHUNK_CHARS:
-                continue
-            records.append(
-                make_cpt_record(ch, SOURCE_NAME, f"{base_id}_chunk_{j}", **extra)
-            )
-        return records
-    return [make_cpt_record(text, SOURCE_NAME, base_id, **extra)]
+    return text_to_cpt_records(
+        text,
+        source=SOURCE_NAME,
+        base_id=base_id,
+        min_chars=MIN_CHUNK_CHARS,
+        max_chars=MAX_CHUNK_CHARS,
+        filename=path.name,
+    )
 
 
 def run():

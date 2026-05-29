@@ -255,6 +255,20 @@ def process_manual_downloads(folder=None):
     return pd.concat(frames, ignore_index=True)
 
 
+def run(folder=None):
+    """Process manual OpenSTAT Excel downloads, save table CSV, then emit CPT JSONL."""
+    from rich.console import Console
+    from src.services.openstat_cpt import run as run_openstat_cpt
+
+    console = Console()
+    console.rule("[bold cyan]OpenSTAT – Process (manual_downloads)[/bold cyan]")
+    df = process_manual_downloads(folder=folder)
+    if df.empty:
+        console.print("[yellow]No OpenSTAT table rows to process.[/yellow]")
+        return
+    run_openstat_cpt(df)
+
+
 @require_internet
 def download_and_process_excel(page, url_index, timestamp, urls, selected_commodity_labels=None):
     print(f"Downloading Excel file for URL {url_index + 1}/{len(urls)}...")
