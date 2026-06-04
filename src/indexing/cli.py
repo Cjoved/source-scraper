@@ -15,16 +15,11 @@ from pathlib import Path
 
 from rich.console import Console
 
-from src.api.settings import get_settings
-from src.indexing.yield_indexer import run_indexer
-from src.services.config import data_path
-from src.storage.qdrant_store import QdrantStore
+from src.indexing.run import default_yield_csv_path, run_yield_index
 
 
 def _default_csv_path() -> Path:
-    settings = get_settings()
-    parts = settings.csv_source_relpath.split("/")
-    return data_path(*parts)
+    return default_yield_csv_path()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -50,31 +45,19 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     console = Console()
-    settings = get_settings()
     csv_path = args.source or _default_csv_path()
 
     if not csv_path.is_file():
         console.print(f"[red]CSV not found:[/red] {csv_path}")
         return 1
 
-    store = QdrantStore(settings)
-    target_records = args.collections in ("all", "structured")
-    target_knowledge = args.collections in ("all", "knowledge")
-
     console.rule("[bold cyan]PRiSM yield indexer[/bold cyan]")
-    console.print(f"[dim]CSV:[/dim] {csv_path}")
-    console.print(f"[dim]Qdrant URL:[/dim] {settings.qdrant_url}")
-    console.print(
-        f"[dim]Targets:[/dim] records={target_records}, knowledge={target_knowledge}"
-    )
 
-    stats = run_indexer(
+    stats = run_yield_index(
         csv_path=csv_path,
-        store=store,
-        settings=settings,
-        target_records=target_records,
-        target_knowledge=target_knowledge,
+        collections=args.collections,
         batch_size=args.batch_size,
+        console=console,
     )
 
     console.print(

@@ -11,7 +11,7 @@ from rich.console import Console
 from src.orchestrator.config import JobSpec, OrchestratorConfig, load_config
 from src.orchestrator.env import job_env
 from src.orchestrator.lock import browser_job_lock, lock_holder
-from src.orchestrator.preflight import ensure_flaresolverr
+from src.orchestrator.preflight import ensure_flaresolverr, ensure_qdrant
 from src.orchestrator.runners import (
     run_irri,
     run_openstat,
@@ -20,6 +20,7 @@ from src.orchestrator.runners import (
     run_pinoyrice,
     run_prism_scrape,
     run_prism_yield,
+    run_prism_index,
 )
 from src.orchestrator.schedule import job_due_now
 
@@ -34,6 +35,7 @@ JOB_ORDER: tuple[str, ...] = (
     "openstat",
     "prism_scrape",
     "prism_yield",
+    "prism_index",
 )
 
 _RUNNERS: dict[str, Callable[[], None]] = {
@@ -44,6 +46,7 @@ _RUNNERS: dict[str, Callable[[], None]] = {
     "openstat": run_openstat,
     "prism_scrape": run_prism_scrape,
     "prism_yield": run_prism_yield,
+    "prism_index": run_prism_index,
 }
 
 
@@ -91,6 +94,11 @@ def run_job(job_id: str, config: OrchestratorConfig | None = None) -> bool:
     if job_id == "openstat":
         if not ensure_flaresolverr(log=console.print):
             console.print(f"[red]OpenSTAT preflight failed — FlareSolverr not available.[/red]")
+            return False
+
+    if job_id == "prism_index":
+        if not ensure_qdrant(log=console.print):
+            console.print(f"[red]Qdrant preflight failed — indexer cannot run.[/red]")
             return False
 
     started = time.monotonic()

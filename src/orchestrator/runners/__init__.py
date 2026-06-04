@@ -7,7 +7,7 @@ from .openstat_jobs import (
     run_philrice_news,
     run_pinoyrice,
 )
-from .prism_jobs import run_prism_scrape, run_prism_yield
+from .prism_jobs import run_prism_index, run_prism_scrape, run_prism_yield
 
 __all__ = [
     "run_philrice",
@@ -17,4 +17,5 @@ __all__ = [
     "run_openstat",
     "run_prism_scrape",
     "run_prism_yield",
+    "run_prism_index",
 ]

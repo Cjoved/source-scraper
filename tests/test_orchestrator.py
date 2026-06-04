@@ -13,16 +13,16 @@ from zoneinfo import ZoneInfo
 from src.orchestrator.config import load_config
 from src.orchestrator.jobs import JOB_ORDER, run_all, run_job, validate_config
 from src.orchestrator.lock import browser_job_lock, lock_holder, lock_path_for_tests
-from src.orchestrator.preflight import ensure_flaresolverr, is_flaresolverr_healthy
+from src.orchestrator.preflight import ensure_flaresolverr, ensure_qdrant, is_flaresolverr_healthy, is_qdrant_healthy
 from src.orchestrator.schedule import job_due_now
 from src.services.config import PROJECT_ROOT
 
 
 class OrchestratorConfigTests(unittest.TestCase):
-    def test_load_default_yaml_has_seven_jobs(self) -> None:
+    def test_load_default_yaml_has_eight_jobs(self) -> None:
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
         self.assertEqual(cfg.timezone, "Asia/Manila")
-        self.assertEqual(len(cfg.jobs), 7)
+        self.assertEqual(len(cfg.jobs), 8)
         ids = {j.id for j in cfg.jobs}
         self.assertEqual(ids, set(JOB_ORDER))
 
@@ -186,6 +186,44 @@ class BrowserLockJobTests(unittest.TestCase):
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
         self.assertTrue(run_job("philrice", cfg))
         jobs._RUNNERS["philrice"].assert_not_called()
+
+
+class PrismIndexJobTests(unittest.TestCase):
+    @patch("src.orchestrator.jobs.ensure_qdrant", return_value=False)
+    def test_prism_index_fails_when_qdrant_down(self, _mock_ensure: mock.MagicMock) -> None:
+        cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
+        self.assertFalse(run_job("prism_index", cfg))
+
+    @patch("src.orchestrator.jobs.ensure_qdrant", return_value=True)
+    @patch.dict(
+        "src.orchestrator.jobs._RUNNERS",
+        {"prism_index": mock.MagicMock()},
+        clear=False,
+    )
+    def test_prism_index_runs_when_qdrant_up(self, _mock_ensure: mock.MagicMock) -> None:
+        from src.orchestrator import jobs
+
+        cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
+        self.assertTrue(run_job("prism_index", cfg))
+        jobs._RUNNERS["prism_index"].assert_called_once()
+
+
+class QdrantPreflightTests(unittest.TestCase):
+    @patch("src.orchestrator.preflight.requests.get")
+    def test_is_qdrant_healthy_ok(self, mock_get: mock.MagicMock) -> None:
+        mock_get.return_value.status_code = 200
+        self.assertTrue(is_qdrant_healthy())
+
+    @patch(
+        "src.orchestrator.preflight.requests.get",
+        side_effect=__import__("requests").RequestException("down"),
+    )
+    def test_is_qdrant_healthy_down(self, _mock_get: mock.MagicMock) -> None:
+        self.assertFalse(is_qdrant_healthy())
+
+    @patch("src.orchestrator.preflight.is_qdrant_healthy", return_value=True)
+    def test_ensure_qdrant_already_up(self, _mock_health: mock.MagicMock) -> None:
+        self.assertTrue(ensure_qdrant(start_if_down=False))
 
 
 if __name__ == "__main__":

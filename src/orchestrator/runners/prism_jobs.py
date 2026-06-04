@@ -23,3 +23,14 @@ def run_prism_yield() -> None:
 
     console.rule("[bold cyan]PRiSM – Yield CSV Export[/bold cyan]")
     run_yield_export_job(console)
+
+
+def run_prism_index() -> None:
+    from src.indexing.run import run_yield_index
+
+    console.rule("[bold cyan]PRiSM – Qdrant Index[/bold cyan]")
+    stats = run_yield_index(console=console)
+    console.print(
+        f"[green]Indexed.[/green] rows={stats.rows_seen}, "
+        f"records={stats.records_upserted}, knowledge={stats.knowledge_upserted}"
+    )
