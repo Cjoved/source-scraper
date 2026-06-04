@@ -30,6 +30,11 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
 ]
+orchestrator = [
+    "pyyaml>=6.0",
+    "croniter>=2.0",
+    "apscheduler>=3.10",
+]
 openstat = [
     "playwright>=1.54",
     "numpy>=1.26",

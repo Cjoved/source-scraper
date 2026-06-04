@@ -1,0 +1,10 @@
+# FlareSolverr for OpenSTAT Cloudflare bypass (Phase 2).
+# Full app container is planned for Phase 4 (see AUTOMATION_ROADMAP.md).
+
+services:
+  flaresolverr:
+    image: flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    ports:
+      - "8191:8191"
+    restart: unless-stopped

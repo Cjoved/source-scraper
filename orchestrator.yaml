@@ -1,0 +1,97 @@
+# Orchestrator job definitions (timezone: Asia/Manila).
+# Run: uv run python -m src.orchestrator run <job_id>
+#      uv run python -m src.orchestrator run --all
+#      uv run python -m src.orchestrator run --due
+
+timezone: Asia/Manila
+
+defaults:
+  timeout_minutes: 180
+
+jobs:
+  - id: philrice
+    enabled: true
+    cron: "0 2 * * 0"
+    browser_heavy: true
+    env_overrides:
+      PHILRICE: "true"
+      PHILRICE_NEWS: "false"
+      PINOYRICE: "false"
+      OPENSTAT: "false"
+      IRRI: "false"
+      PRISM: "false"
+
+  - id: philrice_news
+    enabled: true
+    cron: "0 3 * * 0"
+    browser_heavy: true
+    env_overrides:
+      PHILRICE: "false"
+      PHILRICE_NEWS: "true"
+      PINOYRICE: "false"
+      OPENSTAT: "false"
+      IRRI: "false"
+      PRISM: "false"
+
+  - id: pinoyrice
+    enabled: true
+    cron: "0 2 1,15 * *"
+    browser_heavy: true
+    env_overrides:
+      PHILRICE: "false"
+      PHILRICE_NEWS: "false"
+      PINOYRICE: "true"
+      OPENSTAT: "false"
+      IRRI: "false"
+      PRISM: "false"
+
+  - id: irri
+    enabled: true
+    cron: "0 2 * * 1"
+    browser_heavy: true
+    env_overrides:
+      PHILRICE: "false"
+      PHILRICE_NEWS: "false"
+      PINOYRICE: "false"
+      OPENSTAT: "false"
+      IRRI: "true"
+      PRISM: "false"
+
+  - id: openstat
+    enabled: true
+    cron: "0 4 1-7 * 0"
+    browser_heavy: true
+    env_overrides:
+      PHILRICE: "false"
+      PHILRICE_NEWS: "false"
+      PINOYRICE: "false"
+      OPENSTAT: "true"
+      IRRI: "false"
+      PRISM: "false"
+
+  - id: prism_scrape
+    enabled: true
+    cron: "0 5 1-7 * 0"
+    browser_heavy: true
+    env_overrides:
+      PHILRICE: "false"
+      PHILRICE_NEWS: "false"
+      PINOYRICE: "false"
+      OPENSTAT: "false"
+      IRRI: "false"
+      PRISM: "true"
+      PRISM_JOB: ""
+
+  - id: prism_yield
+    enabled: true
+    cron: "0 6 1-7 * 0"
+    browser_heavy: false
+    timeout_minutes: 360
+    env_overrides:
+      PHILRICE: "false"
+      PHILRICE_NEWS: "false"
+      PINOYRICE: "false"
+      OPENSTAT: "false"
+      IRRI: "false"
+      PRISM: "true"
+      PRISM_JOB: "export_yield_csv"

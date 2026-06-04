@@ -95,6 +95,28 @@ uv run python main.py index --all    # run the Qdrant indexer
 uv run uvicorn main:app              # uvicorn directly (uses re-exported `app`)
 ```
 
+### Scheduled runs (orchestrator)
+
+Install orchestrator dependencies (PyYAML, croniter, APScheduler), plus OpenStat/browser extras when running browser jobs:
+
+```bash
+uv sync --extra orchestrator --extra openstat --extra browser
+```
+
+Jobs and cron schedules are defined in [`orchestrator.yaml`](orchestrator.yaml) (timezone `Asia/Manila`).
+
+```bash
+uv run python -m src.orchestrator list
+uv run python -m src.orchestrator run philrice
+uv run python -m src.orchestrator run --all
+uv run python -m src.orchestrator run --due
+uv run python -m src.orchestrator serve
+```
+
+- **`run --due`** — for a single OS cron / Task Scheduler entry that polls every minute.
+- **`serve`** — long-running APScheduler process (same `--due` logic).
+- Setup guide: [`docs/SCHEDULER_SETUP.md`](docs/SCHEDULER_SETUP.md) (Windows + Linux, browser lock, FlareSolverr).
+
 ### Mode 1: Yield Export (HTTP -> CSV)
 
 Use this for full yield-table export.
