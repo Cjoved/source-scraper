@@ -97,10 +97,10 @@ uv run uvicorn main:app              # uvicorn directly (uses re-exported `app`)
 
 ### Scheduled runs (orchestrator)
 
-Install orchestrator dependencies (PyYAML, croniter, APScheduler), plus OpenStat/browser extras when running browser jobs:
+Install orchestrator dependencies (PyYAML, croniter, APScheduler), plus OpenStat/browser/api extras when running browser jobs or the Qdrant indexer:
 
 ```bash
-uv sync --extra orchestrator --extra openstat --extra browser
+uv sync --extra orchestrator --extra openstat --extra browser --extra api
 ```
 
 Jobs and cron schedules are defined in [`orchestrator.yaml`](orchestrator.yaml) (timezone `Asia/Manila`).

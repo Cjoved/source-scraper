@@ -1,5 +1,9 @@
-# FlareSolverr for OpenSTAT Cloudflare bypass (Phase 2).
+# Local stack for scheduled scraping + PRiSM API (Phase 2 gaps).
 # Full app container is planned for Phase 4 (see AUTOMATION_ROADMAP.md).
+#
+#   docker compose up -d              # FlareSolverr + Qdrant
+#   docker compose up -d flaresolverr # OpenSTAT only
+#   docker compose up -d qdrant       # API / indexer only
 
 services:
   flaresolverr:
@@ -8,3 +12,15 @@ services:
     ports:
       - "8191:8191"
     restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:
