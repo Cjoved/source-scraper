@@ -292,23 +292,25 @@ def _alert_kind(ctx: RunContext) -> AlertKind:
 
 def _resolve_severity_theme(ctx: RunContext) -> SeverityTheme:
     kind = _alert_kind(ctx)
+    # Discord sidebar colors — official palette where possible (decimal int, not hex string).
+    # https://discord.com/branding — blurple 0x5865F2, green 0x57F287, red 0xED4245, yellow 0xFEE75C
     if kind == "success":
         return SeverityTheme(
             badge="🟢 JOB OK",
             bar="🟢 ━━━━━━━━━━━━━━━━",
-            discord_color=0x22C55E,
+            discord_color=0x57F287,
         )
     if kind == "timeout":
         return SeverityTheme(
             badge="🟣 TIMEOUT WARNING",
             bar="🟣 ━━━━━━━━━━━━━━━━",
-            discord_color=0xA855F7,
+            discord_color=0x9B59B6,
         )
     if kind == "warning":
         return SeverityTheme(
             badge="🟡 JOB WARNING",
             bar="🟡 ━━━━━━━━━━━━━━━━",
-            discord_color=0xEAB308,
+            discord_color=0xFEE75C,
         )
 
     error_type = (ctx.error or {}).get("type", "JobError")
@@ -316,22 +318,22 @@ def _resolve_severity_theme(ctx: RunContext) -> SeverityTheme:
         "ValidationError": SeverityTheme(
             badge="🟠 VALIDATION FAILED",
             bar="🟠 ━━━━━━━━━━━━━━━━",
-            discord_color=0xF97316,
+            discord_color=0xE67E22,
         ),
         "PreflightError": SeverityTheme(
             badge="🟡 PREFLIGHT FAILED",
             bar="🟡 ━━━━━━━━━━━━━━━━",
-            discord_color=0xEAB308,
+            discord_color=0xFEE75C,
         ),
         "TestAlert": SeverityTheme(
             badge="🔵 TEST ALERT",
             bar="🔵 ━━━━━━━━━━━━━━━━",
-            discord_color=0x3B82F6,
+            discord_color=0x5865F2,
         ),
         "TestError": SeverityTheme(
             badge="🔵 TEST ALERT",
             bar="🔵 ━━━━━━━━━━━━━━━━",
-            discord_color=0x3B82F6,
+            discord_color=0x5865F2,
         ),
     }
     return themes.get(
@@ -339,7 +341,7 @@ def _resolve_severity_theme(ctx: RunContext) -> SeverityTheme:
         SeverityTheme(
             badge="🔴 JOB FAILED",
             bar="🔴 ━━━━━━━━━━━━━━━━",
-            discord_color=0xE03E3E,
+            discord_color=0xED4245,
         ),
     )
 
@@ -596,12 +598,18 @@ def _should_alert(ctx: RunContext) -> bool:
     return alert_on_success()
 
 
+_HTTP_USER_AGENT = "AgentScraper/1.0 (+https://github.com/source-scraper)"
+
+
 def _post_json(url: str, payload: dict[str, object], *, timeout: float = 15.0) -> None:
     body = json.dumps(payload).encode("utf-8")
     req = Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": _HTTP_USER_AGENT,
+        },
         method="POST",
     )
     with urlopen(req, timeout=timeout) as resp:
@@ -662,62 +670,96 @@ def _send_telegram(ctx: RunContext) -> list[str]:
         return [f"telegram_failed:{exc}"]
 
 
+def _discord_description(ctx: RunContext, values: dict[str, str]) -> str:
+    """Embed body — Markdown (not HTML). Max 4096 chars."""
+    kind = _alert_kind(ctx)
+    lines = [
+        f"**{values['agent']}**",
+        f"*{values['intro_plain']}*",
+        "",
+    ]
+    if kind == "success":
+        lines.append(f"✅ {values['summary_plain']}")
+        bullets = values["bullets_plain"].strip()
+        if bullets:
+            lines.extend(["", bullets])
+    elif kind in {"warning", "timeout"}:
+        lines.append(f"⚠️ {values['summary_plain']}")
+    else:
+        lines.append(f"❌ {values['summary_plain']}")
+    return "\n".join(lines)[:4096]
+
+
+def _discord_embed_fields(ctx: RunContext, values: dict[str, str]) -> list[dict[str, object]]:
+    """Structured fields — inline pairs first, full-width detail last."""
+    fields: list[dict[str, object]] = [
+        {"name": "⏱ Duration", "value": values["duration_human"], "inline": True},
+        {"name": "🏷 Type", "value": values["error_type"], "inline": True},
+        {"name": "🆔 Run ID", "value": f"`{values['run_id']}`", "inline": False},
+    ]
+    if values["retry_command"]:
+        fields.append(
+            {
+                "name": "🔁 Retry",
+                "value": f"```{values['retry_command']}```",
+                "inline": False,
+            }
+        )
+    tb = _traceback_summary(ctx)
+    if tb:
+        fields.append(
+            {"name": "🔍 Detail", "value": f"```{tb[:900]}```", "inline": False}
+        )
+    elif values["error_detail_plain"] and _alert_kind(ctx) != "success":
+        fields.append(
+            {
+                "name": "🔍 Detail",
+                "value": values["error_detail_plain"][:1024],
+                "inline": False,
+            }
+        )
+    fields.append(
+        {"name": "📄 Manifest", "value": f"`{values['manifest_short']}`", "inline": False}
+    )
+    if values["validation_block_plain"].strip():
+        path = values["validation_block_plain"].replace("validation:", "").strip()
+        fields.append(
+            {"name": "📋 Validation", "value": f"`{path}`", "inline": False}
+        )
+    return fields
+
+
+def _build_discord_payload(ctx: RunContext) -> dict[str, object]:
+    """
+    Discord webhook embed template.
+
+    API: POST webhook URL with JSON { username, embeds: [{ title, description, color, fields, footer, timestamp }] }
+    - color: decimal integer (0xED4245 red, 0x57F287 green) — NOT hex string
+    - description/fields: Markdown (**bold**, *italic*, `code`, ```blocks```)
+    - max 25 fields, 6000 chars total per embed
+    """
+    values = _alert_template_values(ctx)
+    embed: dict[str, object] = {
+        "title": values["severity_badge"],
+        "description": _discord_description(ctx, values),
+        "color": int(values["discord_color"]),
+        "fields": _discord_embed_fields(ctx, values),
+        "footer": {"text": "Agent Scraper 🤖"},
+    }
+    if ctx.ended_at is not None:
+        embed["timestamp"] = ctx.ended_at.isoformat()
+    return {
+        "username": ALERT_BRAND_TITLE,
+        "embeds": [embed],
+    }
+
+
 def _send_discord(ctx: RunContext) -> list[str]:
     url = os.getenv("ALERT_DISCORD_WEBHOOK_URL", "").strip()
     if not url:
         return []
-    values = _alert_template_values(ctx)
-    summary_label = {
-        "success": "Result",
-        "warning": "Warning",
-        "timeout": "Warning",
-    }.get(_alert_kind(ctx), "Error")
-    fields = [
-        {"name": "Job", "value": ctx.job_id, "inline": True},
-        {"name": "Run ID", "value": ctx.run_id, "inline": False},
-        {"name": summary_label, "value": values["summary_plain"][:1024], "inline": False},
-        {"name": "Manifest", "value": values["manifest_short"][:1024], "inline": False},
-    ]
-    if ctx.duration_seconds is not None:
-        fields.insert(2, {"name": "Duration", "value": f"{ctx.duration_seconds}s", "inline": True})
-    if ctx.warnings:
-        fields.append(
-            {
-                "name": "Warnings",
-                "value": "; ".join(ctx.warnings[:3])[:1024],
-                "inline": False,
-            }
-        )
-    embed_color = int(values["discord_color"])
-    description = f"**{values['agent']}**\n📋 {values['summary_plain']}"
-    if values["error_detail_plain"] and _alert_kind(ctx) != "success":
-        description += f"\n\n🔍 {values['error_detail_plain'][:500]}"
-    elif _alert_kind(ctx) == "success":
-        description += f"\n\n📊 {values['outputs_plain']}"
-
-    embed_fields: list[dict[str, object]] = [
-        {"name": "Type", "value": values["error_type"], "inline": True},
-        {"name": "Duration", "value": values["duration_human"], "inline": True},
-        *fields,
-    ]
-    if values["retry_command"]:
-        embed_fields.append(
-            {"name": "Retry", "value": f"`{values['retry_command']}`", "inline": False}
-        )
-
-    payload = {
-        "username": ALERT_BRAND_TITLE,
-        "embeds": [
-            {
-                "title": values["severity_badge"],
-                "description": description[:4096],
-                "color": embed_color,
-                "fields": embed_fields,
-            }
-        ],
-    }
     try:
-        _post_json(url, payload)
+        _post_json(url, _build_discord_payload(ctx))
         return ["discord"]
     except (URLError, OSError, TimeoutError) as exc:
         return [f"discord_failed:{exc}"]

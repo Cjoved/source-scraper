@@ -13,6 +13,7 @@ from unittest.mock import patch
 from src.orchestrator.alerts import (
     _alert_message,
     _alert_message_html,
+    _build_discord_payload,
     _resolve_severity_theme,
     _should_alert,
     alert_on_success,
@@ -84,7 +85,15 @@ class AlertsTests(unittest.TestCase):
         self.assertEqual(mock_post.call_count, 1)
         payload = mock_post.call_args[0][1]
         self.assertIn("embeds", payload)
-        self.assertEqual(payload["embeds"][0]["color"], 0x3B82F6)
+        self.assertEqual(payload["embeds"][0]["color"], 0x5865F2)
+
+    def test_discord_embed_clean_layout(self) -> None:
+        embed = _build_discord_payload(_failed_ctx())["embeds"][0]
+        self.assertIn("Agent Scraper", embed["footer"]["text"])
+        self.assertIn("⏱ Duration", embed["fields"][0]["name"])
+        names = [f["name"] for f in embed["fields"]]
+        self.assertEqual(sum(1 for n in names if "Duration" in n), 1)
+        self.assertIn("📄 Manifest", names)
 
     @patch.dict(
         "os.environ",
@@ -164,7 +173,13 @@ class AlertsTests(unittest.TestCase):
             clear=False,
         ):
             send_test_alerts(job_id="philrice", kind="failure")
-        text = mock_post.call_args[0][1]["text"]
+        telegram_payloads = [
+            call[0][1]
+            for call in mock_post.call_args_list
+            if isinstance(call[0][1], dict) and "text" in call[0][1]
+        ]
+        self.assertTrue(telegram_payloads, "expected at least one Telegram payload")
+        text = telegram_payloads[0]["text"]
         self.assertIn("JOB FAILED", text)
         self.assertNotIn("TEST ALERT", text)
 
