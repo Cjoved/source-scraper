@@ -16,11 +16,9 @@ from pathlib import Path
 
 from src.openstat.agri_corpus.scraper_utils import normalize_url, load_checkpoint, save_checkpoint
 
-try:
-    from playwright_stealth import stealth_sync
-    HAS_STEALTH = True
-except ImportError:
-    HAS_STEALTH = False
+from src.openstat.utils.stealth import apply_page_stealth, stealth_available
+
+HAS_STEALTH = stealth_available()
 
 load_dotenv()
 console = Console()
@@ -70,14 +68,19 @@ def _should_skip_pdf(url: str) -> bool:
 
 
 def _load_checkpoint():
-    """Load set of already-downloaded PDF URLs."""
-    data = load_checkpoint(CHECKPOINT_PATH, default={"downloaded_urls": []})
-    return set(data.get("downloaded_urls", []))
+    """Load set of completed PDF URLs (download + process in stream mode)."""
+    data = load_checkpoint(CHECKPOINT_PATH, default={"completed_urls": [], "downloaded_urls": []})
+    completed = data.get("completed_urls") or data.get("downloaded_urls") or []
+    return set(completed)
 
 
-def _save_checkpoint(downloaded_urls):
-    """Save checkpoint with downloaded PDF URLs."""
-    save_checkpoint(CHECKPOINT_PATH, {"downloaded_urls": sorted(downloaded_urls)})
+def _save_checkpoint(completed_urls: set[str]) -> None:
+    """Save checkpoint; keep downloaded_urls alias for older tooling."""
+    urls = sorted(completed_urls)
+    save_checkpoint(
+        CHECKPOINT_PATH,
+        {"completed_urls": urls, "downloaded_urls": urls},
+    )
 
 
 def _is_pdf_link(href: str) -> bool:
@@ -340,39 +343,77 @@ def download_pdf(context, pdf_url: str, folder: str, index: int) -> bool:
         return False
 
 
-def download_segment_pdfs(context, urls: list[str], downloaded: set[str]) -> None:
+def download_segment_pdfs(
+    context,
+    urls: list[str],
+    completed: set[str],
+    *,
+    corpus_f=None,
+) -> int:
     """
-    I-download agad ang bagong PDFs para sa isang segment.
-    Kapag na-ulit ang document (nasa checkpoint o may file na sa disk), wag na i-download.
+    Download new PDFs for a segment. When corpus_f is set (stream mode), process and
+    append to corpus immediately, then delete PDF if configured.
+    Returns total corpus records written this segment.
     """
+    from src.openstat.services.philrice import ingest_pdf_to_corpus
+
     if not urls:
-        return
-    base_idx = len(downloaded)
+        return 0
+    records_written = 0
+    base_idx = len(completed)
     for j, pdf_url in enumerate(urls):
-        if pdf_url in downloaded:
-            console.print(f"[dim]  Skip (already in checkpoint): ...{pdf_url[-50:]}[/dim]")
+        if pdf_url in completed:
+            console.print(f"[dim]  Skip (already completed): ...{pdf_url[-50:]}[/dim]")
             continue
-        # Kung may file na sa disk (e.g. nawala checkpoint), wag na i-download
         path = os.path.join(PHILRICE_PDFS_DIR, _safe_filename(pdf_url, base_idx + j))
         if os.path.isfile(path):
-            console.print(f"[dim]  Skip (file exists): {os.path.basename(path)}[/dim]")
-            downloaded.add(pdf_url)
-            _save_checkpoint(downloaded)
+            if corpus_f is not None:
+                records_written += ingest_pdf_to_corpus(path, corpus_f)
+                completed.add(pdf_url)
+                _save_checkpoint(completed)
+            else:
+                console.print(f"[dim]  Skip (file exists): {os.path.basename(path)}[/dim]")
+                completed.add(pdf_url)
+                _save_checkpoint(completed)
             continue
         console.print(f"[dim]  Downloading: {pdf_url[:80]}...[/dim]")
         if download_pdf(context, pdf_url, PHILRICE_PDFS_DIR, base_idx + j):
-            downloaded.add(pdf_url)
-            _save_checkpoint(downloaded)
+            if corpus_f is not None and os.path.isfile(path):
+                records_written += ingest_pdf_to_corpus(path, corpus_f)
+            completed.add(pdf_url)
+            _save_checkpoint(completed)
         time.sleep(DELAY_PDF)
+    return records_written
 
 
 @require_internet
 def run():
+    from src.openstat.services.philrice import (
+        delete_pdf_after_process,
+        open_corpus_for_stream,
+        stream_process_enabled,
+    )
+
     console.rule("[bold cyan]PhilRice PDF Scraper")
     os.makedirs(PHILRICE_PDFS_DIR, exist_ok=True)
-    downloaded = _load_checkpoint()
-    if downloaded:
-        console.print(f"[dim]Resume: {len(downloaded)} PDFs in checkpoint – repeated documents will not be re-downloaded.[/dim]")
+    completed = _load_checkpoint()
+    stream = stream_process_enabled()
+    if stream:
+        console.print(
+            "[dim]Stream mode: download → process → append corpus"
+            + (" → delete PDF" if delete_pdf_after_process() else "")
+            + "[/dim]"
+        )
+    if completed:
+        console.print(
+            f"[dim]Resume: {len(completed)} PDF(s) already completed in checkpoint.[/dim]"
+        )
+
+    corpus_f = None
+    corpus_path = None
+    total_stream_records = 0
+    if stream:
+        corpus_f, corpus_path = open_corpus_for_stream()
 
     all_pdf_urls = []
     launch_args = [
@@ -395,14 +436,9 @@ def run():
             locale="en-PH",
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         )
+        page = context.new_page()
         if HAS_STEALTH:
-            try:
-                page = context.new_page()
-                stealth_sync(page)
-            except Exception:
-                page = context.new_page()
-        else:
-            page = context.new_page()
+            apply_page_stealth(page)
 
         page.set_default_timeout(60000)  # 1 min – sapat para mahina signal, hindi sobrang tagal
         time.sleep(2)
@@ -569,10 +605,12 @@ def run():
 
                 # Pagkatapos ma-scrape lahat ng pages + year links para sa base_url na ito,
                 # i-download agad lahat ng bagong PDF URLs sa segment na ito.
-                segment_urls = [u for u in all_pdf_urls[segment_start:] if u not in downloaded]
+                segment_urls = [u for u in all_pdf_urls[segment_start:] if u not in completed]
                 if segment_urls:
                     console.print(f"[bold]Downloading {len(segment_urls)} PDFs for section: {base_url}[/bold]")
-                    download_segment_pdfs(context, segment_urls, downloaded)
+                    total_stream_records += download_segment_pdfs(
+                        context, segment_urls, completed, corpus_f=corpus_f
+                    )
 
             except Exception as e:
                 console.print(f"[yellow]Failed to load {base_url}: {e}[/yellow]")
@@ -584,16 +622,30 @@ def run():
             console.print(f"[bold dim]Total PDFs mula sa lahat ng R&D year links: {total_year_pdfs}[/bold dim]")
 
         # Safety net: kung sakaling may naiwan pang URLs na hindi na-download sa kahit anong segment.
-        remaining = [u for u in all_pdf_urls if u not in downloaded]
+        remaining = [u for u in all_pdf_urls if u not in completed]
         if remaining:
             console.print(f"[bold]Extra pass: downloading {len(remaining)} remaining PDFs (all sections).[/bold]")
-            download_segment_pdfs(context, remaining, downloaded)
+            total_stream_records += download_segment_pdfs(
+                context, remaining, completed, corpus_f=corpus_f
+            )
 
         browser.close()
 
+    if corpus_f is not None:
+        corpus_f.close()
+        console.print(f"[green]Stream corpus records this run: {total_stream_records}[/green]")
+        console.print(f"[cyan]Corpus: {corpus_path}[/cyan]")
+
     console.rule("[bold green]Done")
-    console.print(f"PDFs saved to: [cyan]{os.path.abspath(PHILRICE_PDFS_DIR)}[/cyan]")
-    console.print(f"Total downloaded (this run + checkpoint): {len(downloaded)}")
+    if not stream:
+        console.print(f"PDFs saved to: [cyan]{os.path.abspath(PHILRICE_PDFS_DIR)}[/cyan]")
+    else:
+        left = list(Path(PHILRICE_PDFS_DIR).glob("*.pdf"))
+        if left:
+            console.print(
+                f"[yellow]{len(left)} PDF(s) still on disk (process failed or delete off).[/yellow]"
+            )
+    console.print(f"Total completed (checkpoint): {len(completed)}")
 
 
 if __name__ == "__main__":

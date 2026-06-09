@@ -35,11 +35,9 @@ from pathlib import Path
 from src.openstat.agri_corpus.scraper_utils import normalize_url, load_checkpoint, save_checkpoint
 from src.utils.jsonl import append_jsonl
 
-try:
-    from playwright_stealth import stealth_sync
-    HAS_STEALTH = True
-except ImportError:
-    HAS_STEALTH = False
+from src.openstat.utils.stealth import apply_page_stealth, stealth_available
+
+HAS_STEALTH = stealth_available()
 
 load_dotenv()
 console = Console()
@@ -660,14 +658,9 @@ def run():
             locale="en-PH",
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         )
-        if HAS_STEALTH:
-            try:
-                page = context.new_page()
-                stealth_sync(page)
-            except Exception:
-                page = context.new_page()
-        else:
-            page = context.new_page()
+        page = context.new_page()
+        if apply_page_stealth(page):
+            console.print("[dim]Stealth evasions applied.[/dim]")
 
         page.set_default_timeout(30000)
 

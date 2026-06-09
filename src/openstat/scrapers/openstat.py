@@ -1,6 +1,6 @@
 """
 OpenSTAT (PSA) scraper – Agri-Price data from openstat.psa.gov.ph.
-Uses Playwright; Excel download → process (src.openstat.services.openstat) → CSV/CPT under data/openstat_processed/ + MySQL.
+Uses Playwright; Excel download → process (src.openstat.services.openstat) → CSV/CPT under data/openstat_processed/.
 """
 from playwright.sync_api import sync_playwright
 from src.openstat.utils import (
@@ -8,7 +8,6 @@ from src.openstat.utils import (
     wait_for_selector_with_retry,
     wait_for_internet,
     get_cloudflare_cookies,
-    store_data_in_mysql,
 )
 from src.openstat.agri_corpus.scraper_utils import load_checkpoint, save_checkpoint
 from src.openstat.config import data_path
@@ -21,11 +20,9 @@ import os
 import pandas as pd
 import time
 
-try:
-    from playwright_stealth import stealth_sync
-    HAS_STEALTH = True
-except ImportError:
-    HAS_STEALTH = False
+from src.openstat.utils.stealth import apply_page_stealth, stealth_available
+
+HAS_STEALTH = stealth_available()
 
 console = Console()
 load_dotenv()
@@ -112,6 +109,8 @@ def ensure_beginning_of_row_checked(page, variable_title: str):
 
 
 MAX_YEARS_PER_SELECTION_SAFETY = 50
+# Cap years per Excel submit — large exports often trigger PSA/Cloudflare 524 timeouts.
+MAX_YEARS_PER_EXPORT = max(1, int(os.getenv("OPENSTAT_MAX_YEARS_PER_BATCH", "4")))
 
 
 def _load_checkpoint():
@@ -126,12 +125,24 @@ def _save_checkpoint(completed_url_indices):
     )
 
 
-def _page_is_cloudflare_522(page):
+def _page_cloudflare_error(page) -> str | None:
+    """Return Cloudflare error code if the page is a CF error (522/524), else None."""
     try:
         content = page.content()
-        return "Error code 522" in content or ("Connection timed out" in content and "Cloudflare" in content)
     except Exception:
-        return False
+        return None
+    for code in ("524", "522"):
+        if f"Error code {code}" in content:
+            return code
+    if "Connection timed out" in content and "Cloudflare" in content:
+        return "522"
+    if "A timeout occurred" in content and "openstat.psa.gov.ph" in content:
+        return "524"
+    return None
+
+
+def _page_is_cloudflare_522(page):
+    return _page_cloudflare_error(page) == "522"
 
 
 @require_internet
@@ -204,14 +215,12 @@ def scrape_all():
 
         page = context.new_page()
 
-        if HAS_STEALTH:
-            try:
-                stealth_sync(page)
-                console.print("[dim]Stealth evasions applied.[/dim]")
-            except Exception as e:
-                console.print(f"[dim]Stealth skip: {e}[/dim]")
-        else:
-            console.print("[dim]Install playwright-stealth for better bypass: pip install playwright-stealth[/dim]")
+        if apply_page_stealth(page):
+            console.print("[dim]Stealth evasions applied.[/dim]")
+        elif not HAS_STEALTH:
+            console.print(
+                "[dim]playwright-stealth not installed — uv sync --extra openstat[/dim]"
+            )
 
         page.set_default_timeout(60000)
         time.sleep(1)
@@ -319,7 +328,33 @@ def scrape_all():
                         url_skipped_due_to_error = True
                 if not remaining_years:
                     break
-                select_dropdown_options(page, current_batch, finalize=True)
+
+                export_batch = current_batch
+                if len(export_batch) > MAX_YEARS_PER_EXPORT:
+                    overflow = export_batch[MAX_YEARS_PER_EXPORT:]
+                    export_batch = export_batch[:MAX_YEARS_PER_EXPORT]
+                    remaining_years = overflow + [
+                        y for y in remaining_years if y not in current_batch
+                    ]
+                    console.print(
+                        f"[dim]Export capped to {len(export_batch)} year(s) per submit "
+                        f"(OPENSTAT_MAX_YEARS_PER_BATCH={MAX_YEARS_PER_EXPORT}) to reduce 524 timeouts.[/dim]"
+                    )
+
+                cf_code = _page_cloudflare_error(page)
+                if cf_code:
+                    console.print(
+                        f"[yellow]Cloudflare {cf_code} on page — PSA origin timeout. "
+                        f"Retry later or lower OPENSTAT_MAX_YEARS_PER_BATCH (now {MAX_YEARS_PER_EXPORT}).[/yellow]"
+                    )
+                    if cf_code == "524":
+                        remaining_years = export_batch + [
+                            y for y in remaining_years if y not in export_batch
+                        ]
+                        page.wait_for_timeout(15000)
+                        continue
+
+                select_dropdown_options(page, export_batch, finalize=True)
                 commodity_selector = "#ctl00_ContentPlaceHolderMain_VariableSelector1_VariableSelector1_VariableSelectorValueSelectRepeater_ctl02_VariableValueSelect_VariableValueSelect_ValuesListBox"
                 selected_commodity_labels = []
                 try:
@@ -331,26 +366,25 @@ def scrape_all():
                     pass
 
                 try:
-                    submit_button = page.wait_for_selector("input[type='submit']", timeout=120000)
-                    submit_button.click()
-                    page.wait_for_load_state("load", timeout=90000)
-
                     cleaned_data = download_and_process_excel(
                         page, url_index, timestamp, urls,
-                        selected_commodity_labels=selected_commodity_labels
+                        selected_commodity_labels=selected_commodity_labels,
                     )
                     if cleaned_data is not None and not cleaned_data.empty:
                         url_data_frames.append(cleaned_data)
                         batch_rows = len(cleaned_data)
                         total_this_url = sum(len(df) for df in url_data_frames)
-                        console.print(f"[green]✔ Processed: {len(current_batch)} years (batch: {batch_rows} rows, total this URL: {total_this_url})[/green]")
+                        console.print(
+                            f"[green]✔ Processed: {len(export_batch)} years "
+                            f"(batch: {batch_rows} rows, total this URL: {total_this_url})[/green]"
+                        )
                     else:
-                        console.print("[yellow]No data returned[/yellow]")
+                        console.print("[yellow]No data returned for this batch[/yellow]")
 
                 except Exception as e:
-                    console.print(f"[red]Submission error: {e}[/red]")
+                    console.print(f"[red]Excel download error: {e}[/red]")
 
-                remaining_years = [y for y in remaining_years if y not in current_batch]
+                remaining_years = [y for y in remaining_years if y not in export_batch]
                 if remaining_years:
                     console.print(f"[dim]Remaining years: {len(remaining_years)}[/dim]")
                 else:
@@ -358,10 +392,15 @@ def scrape_all():
 
             all_data_frames.extend(url_data_frames)
 
-            if not url_skipped_due_to_error:
+            if not url_skipped_due_to_error and url_data_frames:
                 completed_url_indices.add(url_index)
                 _save_checkpoint(completed_url_indices)
                 console.print(f"[dim]Checkpoint saved: URL {url_index + 1} complete.[/dim]")
+            elif not url_skipped_due_to_error and not url_data_frames:
+                console.print(
+                    f"[yellow]URL {url_index + 1} finished with no data — "
+                    "not checkpointed (will retry on next run with RESUME_CHECKPOINT=true).[/yellow]"
+                )
 
         browser.close()
 
@@ -381,8 +420,6 @@ def scrape_all():
         from src.services.openstat_cpt import run as run_openstat_cpt
 
         run_openstat_cpt(final_df)
-
-        store_data_in_mysql(final_df)
     else:
         console.print("[bold red]No data was scraped![/bold red]")
 
@@ -427,8 +464,11 @@ def navigate_with_retries(page, url, timeout=45000):
             print(f"→ Navigating (Attempt {attempt}/{MAX_NAV_ATTEMPTS})...")
             page.goto(url, timeout=timeout, wait_until="domcontentloaded")
             page.wait_for_load_state("load", timeout=30000)
-            if _page_is_cloudflare_522(page):
-                console.print(f"[yellow]Cloudflare Error 522. Retry {attempt}/{MAX_NAV_ATTEMPTS}.[/yellow]")
+            cf_code = _page_cloudflare_error(page)
+            if cf_code in ("522", "524"):
+                console.print(
+                    f"[yellow]Cloudflare Error {cf_code}. Retry {attempt}/{MAX_NAV_ATTEMPTS}.[/yellow]"
+                )
                 attempt += 1
                 time.sleep(5)
                 continue

@@ -16,6 +16,7 @@ from src.openstat.agri_corpus.pdf_utils import (
     HAS_PYMUPDF,
 )
 from src.openstat.agri_corpus.cpt_utils import make_cpt_record
+from src.utils.jsonl import dumps_jsonl_record
 
 load_dotenv()
 console = Console()
@@ -151,7 +152,9 @@ def run_text():
     seen_urls: set[str] = set()
     total_out = 0
     per_url_buffers: dict[str, list[dict]] = {}
-    with open(PINOYRICE_INPUT_JSONL, "r", encoding="utf-8") as f_in, open(PINOYRICE_OUTPUT_JSONL, "w", encoding="utf-8") as f_out:
+    with open(PINOYRICE_INPUT_JSONL, "r", encoding="utf-8") as f_in, open(
+        PINOYRICE_OUTPUT_JSONL, "w", encoding="utf-8", newline="\n"
+    ) as f_out:
         for line in f_in:
             line = line.strip()
             if not line:
@@ -169,7 +172,7 @@ def run_text():
             if not chunks:
                 continue
             for ch in chunks:
-                f_out.write(json.dumps(ch, ensure_ascii=False) + "\n")
+                f_out.write(dumps_jsonl_record(ch) + "\n")
             total_out += len(chunks)
             key = safe_id_from_url(url, fallback="pinoyrice") if url else (raw.get("doc_id") or "rec")
             if key not in per_url_buffers:
@@ -196,7 +199,7 @@ def run_pdfs():
         return 0
     os.makedirs(PINOYRICE_PER_FILE_PDF_DIR, exist_ok=True)
     total = 0
-    with open(PINOYRICE_PDFS_JSONL, "w", encoding="utf-8") as corpus_f:
+    with open(PINOYRICE_PDFS_JSONL, "w", encoding="utf-8", newline="\n") as corpus_f:
         for pdf_path in pdf_files:
             records = process_one_pdf(str(pdf_path))
             safe_stem = re.sub(r"[^\w\-.]", "_", pdf_path.stem)[:180]
@@ -204,7 +207,7 @@ def run_pdfs():
             with open(per_path, "w", encoding="utf-8") as jf:
                 json.dump(records, jf, ensure_ascii=False, indent=2)
             for r in records:
-                corpus_f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                corpus_f.write(dumps_jsonl_record(r) + "\n")
             total += len(records)
     return total
 

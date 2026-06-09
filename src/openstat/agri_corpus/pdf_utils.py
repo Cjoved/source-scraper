@@ -4,6 +4,8 @@ Shared PDF utilities: extract text + tables, detect/remove noise lines, clean te
 import re
 from collections import Counter
 
+from src.utils.text_sanitize import sanitize_corpus_text
+
 try:
     import fitz
     HAS_PYMUPDF = True
@@ -48,12 +50,25 @@ def extract_text_from_pdf(pdf_path: str) -> list[dict]:
     if not HAS_PYMUPDF:
         return []
     out = []
+    plumber_doc = None
     try:
+        if HAS_PDFPLUMBER:
+            try:
+                plumber_doc = pdfplumber.open(pdf_path)
+            except Exception:
+                plumber_doc = None
         doc = fitz.open(pdf_path)
         for i in range(len(doc)):
             text = doc[i].get_text()
-            if HAS_PDFPLUMBER:
-                tables = extract_tables_from_page(pdf_path, i + 1)
+            if plumber_doc is not None and 1 <= i + 1 <= len(plumber_doc.pages):
+                tables = []
+                try:
+                    for t in plumber_doc.pages[i].extract_tables() or []:
+                        txt = table_to_text(t)
+                        if txt.strip():
+                            tables.append(txt)
+                except Exception:
+                    pass
                 if tables:
                     text = (text.strip() if text else "") + "\n\n[Table]\n" + "\n\n[Table]\n".join(tables)
             if text and text.strip():
@@ -61,6 +76,12 @@ def extract_text_from_pdf(pdf_path: str) -> list[dict]:
         doc.close()
     except Exception:
         return []
+    finally:
+        if plumber_doc is not None:
+            try:
+                plumber_doc.close()
+            except Exception:
+                pass
     return out
 
 
@@ -94,4 +115,5 @@ def clean_pdf_text(text: str, noise_lines: set[str] | None = None) -> str:
     if noise_lines:
         for line in noise_lines:
             text = re.sub(r"(?m)^" + re.escape(line) + r"\s*$", "", text)
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return sanitize_corpus_text(text)

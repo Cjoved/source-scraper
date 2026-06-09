@@ -20,11 +20,9 @@ import time
 import random
 import urllib.parse
 
-try:
-    from playwright_stealth import stealth_sync
-    HAS_STEALTH = True
-except ImportError:
-    HAS_STEALTH = False
+from src.openstat.utils.stealth import apply_page_stealth, stealth_available
+
+HAS_STEALTH = stealth_available()
 
 load_dotenv()
 console = Console()
@@ -467,15 +465,11 @@ def run():
                 "Referer": "https://www.irri.org/",
             },
         )
-        if HAS_STEALTH:
-            try:
-                page = context.new_page()
-                stealth_sync(page)
-            except Exception:
-                page = context.new_page()
-        else:
-            page = context.new_page()
-            console.print("[dim]Tip: pip install playwright-stealth para i-hide automation signals (optional).[/dim]")
+        page = context.new_page()
+        if not apply_page_stealth(page) and not HAS_STEALTH:
+            console.print(
+                "[dim]playwright-stealth not installed — uv sync --extra openstat[/dim]"
+            )
 
         page.set_default_timeout(30000)
 

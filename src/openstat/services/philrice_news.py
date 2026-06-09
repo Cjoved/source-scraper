@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from src.openstat.agri_corpus.txt_cpt import txt_file_to_cpt_records
 from src.openstat.config import data_path
+from src.utils.jsonl import dumps_jsonl_record
 
 load_dotenv()
 console = Console()
@@ -56,7 +57,7 @@ def run():
     console.rule("[bold cyan]PhilRice News .txt → CPT JSON[/bold cyan]")
     console.print(f"Processing {len(txt_files)} files → {OUTPUT_JSONL}")
     total = 0
-    with open(OUTPUT_JSONL, "w", encoding="utf-8") as corpus_f:
+    with open(OUTPUT_JSONL, "w", encoding="utf-8", newline="\n") as corpus_f:
         for i, txt_path in enumerate(txt_files):
             records = txt_to_cpt_records(str(txt_path))
             if not records:
@@ -66,6 +67,6 @@ def run():
             with open(per_file_path, "w", encoding="utf-8") as jf:
                 json.dump(records, jf, ensure_ascii=False, indent=2)
             for r in records:
-                corpus_f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                corpus_f.write(dumps_jsonl_record(r) + "\n")
                 total += 1
     console.print(f"[green]Done. Total CPT records: {total}[/green]")

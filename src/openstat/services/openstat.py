@@ -156,13 +156,15 @@ def _process_one_sheet(data, sheet_name, commodity_type, unwanted_texts, log_pre
     for k in KNOWN_TYPES:
         data_long["Price"] = data_long["Price"].str.replace(r"\s*" + re.escape(k) + r"\s*$", "", regex=True)
     data_long["Price"] = data_long["Price"].replace(["..", "-", "NA", ""], np.nan)
-    pattern = "|".join(map(re.escape, unwanted_texts))
-    data_long = data_long[
-        ~data_long.astype(str).apply(
-            lambda row: row.str.contains(pattern, na=False, regex=True).any(),
-            axis=1,
-        )
-    ]
+    # Empty UNWANTED_TEXTS → pattern "" matches every row in pandas and drops all data.
+    if unwanted_texts:
+        pattern = "|".join(map(re.escape, unwanted_texts))
+        data_long = data_long[
+            ~data_long.astype(str).apply(
+                lambda row: row.str.contains(pattern, na=False, regex=True).any(),
+                axis=1,
+            )
+        ]
 
     data_long["Geolocation"] = (
         data_long["Geolocation"]
@@ -256,17 +258,85 @@ def process_manual_downloads(folder=None):
 
 
 def run(folder=None):
-    """Process manual OpenSTAT Excel downloads, save table CSV, then emit CPT JSONL."""
+    """Rebuild CPT from table CSV, or process manual_downloads if no scrape output yet."""
     from rich.console import Console
     from src.services.openstat_cpt import run as run_openstat_cpt
 
     console = Console()
+    processed_dir = data_path("openstat_processed")
+    corpus_path = os.path.join(processed_dir, "openstat_corpus.jsonl")
+    table_csv = os.path.join(processed_dir, "openstat_table.csv")
+
+    if os.path.isfile(corpus_path) and os.path.getsize(corpus_path) > 0:
+        console.print("[dim]openstat_corpus.jsonl already present — skip process step.[/dim]")
+        return
+
+    if os.path.isfile(table_csv):
+        console.rule("[bold cyan]OpenSTAT – Process (from table CSV)[/bold cyan]")
+        df = pd.read_csv(table_csv)
+        if df.empty:
+            console.print("[yellow]openstat_table.csv is empty.[/yellow]")
+            return
+        run_openstat_cpt(df)
+        return
+
     console.rule("[bold cyan]OpenSTAT – Process (manual_downloads)[/bold cyan]")
     df = process_manual_downloads(folder=folder)
     if df.empty:
         console.print("[yellow]No OpenSTAT table rows to process.[/yellow]")
         return
     run_openstat_cpt(df)
+
+
+# PX-Web variable selector: first submit is often "View table" (navigation), not the file export.
+VIEW_TABLE_SUBMIT = (
+    "#ctl00_ContentPlaceHolderMain_VariableSelector1_VariableSelector1_ButtonViewTable"
+)
+TABLE_EXPORT_SELECTORS = (
+    "input[type='submit'][value*='Excel' i]",
+    "a[href*='FileTypeExcel']",
+    "a[href*='.px']",  # some table toolbars use export links
+    "#ctl00_ContentPlaceHolderMain_btnExport1",
+)
+
+
+def _excel_submit_locator(page):
+    """Prefer a non–View-Table submit when PX-Web shows multiple buttons."""
+    export = page.locator(f"input[type='submit']:not({VIEW_TABLE_SUBMIT})")
+    if export.count() > 0:
+        return export.last
+    return page.locator(VIEW_TABLE_SUBMIT)
+
+
+def _trigger_excel_download(page, *, download_timeout_ms: int):
+    """
+    Trigger PSA Excel export (OpenStatv2 flow): Continue → table view, then download.
+    Uses no_wait_after so Playwright does not wait for navigation on file responses.
+    """
+    view_table = page.locator(VIEW_TABLE_SUBMIT)
+    if view_table.count() > 0:
+        print("Step 1: Continue to table view...")
+        view_table.click(timeout=120000)
+        page.wait_for_load_state("load", timeout=120000)
+        page.wait_for_timeout(2000)
+
+    export_selectors = (
+        "input[type='submit'][value*='Excel' i]",
+        "input[type='submit']",
+        *TABLE_EXPORT_SELECTORS,
+    )
+    for sel in export_selectors:
+        loc = page.locator(sel)
+        if loc.count() == 0:
+            continue
+        try:
+            with page.expect_download(timeout=download_timeout_ms) as download_info:
+                loc.first.click(no_wait_after=True, timeout=90000)
+            return download_info.value
+        except Exception:
+            continue
+
+    raise RuntimeError("Could not trigger Excel download from table view")
 
 
 @require_internet
@@ -289,10 +359,7 @@ def download_and_process_excel(page, url_index, timestamp, urls, selected_commod
             try:
                 print(f"Attempt {attempt + 1}/{MAX_SUBMIT_RETRIES} to submit and download...")
 
-                with page.expect_download(timeout=TOTAL_TIMEOUT) as download_info:
-                    page.click("input[type='submit']", timeout=30000)
-
-                download = download_info.value
+                download = _trigger_excel_download(page, download_timeout_ms=TOTAL_TIMEOUT)
 
                 download_path = download.path()
                 wait_time = 0
