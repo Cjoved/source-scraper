@@ -8,6 +8,7 @@
 
 ## Project Layout
 - `main.py`: entrypoint.
+- `src/orchestrator/`: scheduled runs via `orchestrator.yaml` (`python -m src.orchestrator`).
 - `src/scraper/`: canonical PRiSM orchestration, clients, parsers, spiders.
 - `src/openstat/`: OpenStat compatibility package.
   - `src/openstat/scrapers/`: OpenStat workflow scrapers (PhilRice, News, PinoyRice, OpenSTAT, IRRI).
@@ -25,11 +26,18 @@
 
 ## Standard Commands
 - Install core deps: `uv sync`
+- Install orchestrator deps: `uv sync --extra orchestrator` (add `--extra api` for `prism_index`)
 - Install browser deps: `uv sync --extra browser`
 - Install Scrapling fetchers: `uv run scrapling install`
 - Run app: `uv run python main.py`
 - Run OpenStat compatibility workflows: `uv run python main.py openstat`
+- Run scheduled jobs: `uv run python -m src.orchestrator run <job_id>` | `run --all` | `run --due` | `serve`
+- Test alerts: `uv run python -m src.orchestrator test-alerts` (Telegram/Discord from `.env`)
+- Run artifacts: `data/runs/<run_id>/manifest.json` + `validation_report.json`; logs: `data/logs/orchestrator.jsonl`
+- After monthly yield export, `prism_index` refreshes Qdrant for the API (or `python main.py index`)
+- Scheduler + API stack: `docs/SCHEDULER_SETUP.md` (cron, Task Scheduler, browser lock, FlareSolverr, Qdrant)
 - Run tests: `uv run python -m unittest discover -s tests -p "test_*.py" -v`
+- Validate corpora: `uv run python -m src.scripts.validate_corpus` (see `docs/DATA_FORMAT_SPEC.md`)
 
 ## Environment Presets
 - Yield export mode:
@@ -58,6 +66,7 @@
 - Add/update unit tests for parser and formatter behavior changes.
 
 ## Operational Rules
+- PhilRice default pipeline: `PHILRICE_STREAM_PROCESS=true` — download → process → append `philrice_corpus.jsonl` → delete PDF (`PHILRICE_DELETE_PDF_AFTER_CLEAN`, default on in stream mode). Batch mode: set `PHILRICE_STREAM_PROCESS=false`.
 - Prefer checkpoint-safe updates; avoid breaking resume behavior.
 - Do not commit runtime artifacts from `data/` except tracked `.gitkeep` files.
 - Keep `.env` examples mode-specific; avoid mixing conflicting job settings.

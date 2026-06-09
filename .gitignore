@@ -226,3 +226,9 @@ data/prism/*
 !data/prism/.gitkeep
 data/raw/*
 !data/raw/.gitkeep
+data/runs/*
+!data/runs/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
+data/alerts/*
+!data/alerts/.gitkeep

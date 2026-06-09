@@ -34,13 +34,14 @@ orchestrator = [
     "pyyaml>=6.0",
     "croniter>=2.0",
     "apscheduler>=3.10",
+    "structlog>=24.1",
 ]
 openstat = [
     "playwright>=1.54",
+    "playwright-stealth>=1.0",
     "numpy>=1.26",
     "pandas>=2.2",
     "scikit-learn>=1.5",
-    "mysql-connector-python>=9.0",
     "openpyxl>=3.1",
     "pymupdf>=1.24",
     "pdfplumber>=0.11",

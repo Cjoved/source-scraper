@@ -12,6 +12,7 @@ jobs:
   - id: philrice
     enabled: true
     cron: "0 2 * * 0"
+    timeout_minutes: 300
     browser_heavy: true
     env_overrides:
       PHILRICE: "true"
@@ -20,6 +21,9 @@ jobs:
       OPENSTAT: "false"
       IRRI: "false"
       PRISM: "false"
+      PHILRICE_STREAM_PROCESS: "true"
+      PHILRICE_DELETE_PDF_AFTER_CLEAN: "true"
+      PHILRICE_WRITE_PER_FILE: "false"
 
   - id: philrice_news
     enabled: true
