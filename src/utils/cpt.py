@@ -1,5 +1,7 @@
 """CPT (Continued Pre-Training) record format."""
 
+from src.utils.text_sanitize import sanitize_corpus_text
+
 
 def make_cpt_record(
     text: str,
@@ -12,6 +14,7 @@ def make_cpt_record(
     page: int | None = None,
 ) -> dict:
     """Build one CPT chunk record."""
+    text = sanitize_corpus_text(text)
     rec = {
         "text": text,
         "input": text,
