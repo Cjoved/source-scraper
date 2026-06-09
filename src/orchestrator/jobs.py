@@ -6,12 +6,25 @@ import time
 import traceback
 from collections.abc import Callable
 from datetime import datetime
+
 from rich.console import Console
 
+from src.orchestrator.alerts import send_run_alert
 from src.orchestrator.config import JobSpec, OrchestratorConfig, load_config
+from src.orchestrator.corpus_validation import (
+    JOB_CORPUS_SOURCES,
+    validate_job_corpora,
+    validate_quality_enabled,
+)
 from src.orchestrator.env import job_env
 from src.orchestrator.lock import browser_job_lock, lock_holder
+from src.orchestrator.logging_config import (
+    bind_run_context,
+    clear_run_context,
+    get_orchestrator_logger,
+)
 from src.orchestrator.preflight import ensure_flaresolverr, ensure_qdrant
+from src.orchestrator.run_context import RunContext
 from src.orchestrator.runners import (
     run_irri,
     run_openstat,
@@ -78,60 +91,119 @@ def run_job(job_id: str, config: OrchestratorConfig | None = None) -> bool:
         return True
 
     runner = _RUNNERS[job_id]
+    ctx = RunContext.start(job_id, spec, cfg)
+    bind_run_context(run_id=ctx.run_id, job_id=job_id)
+    log = get_orchestrator_logger().bind(event="job.lifecycle")
+
     console.rule(f"[bold]Orchestrator – {job_id}[/bold]")
-    console.print(f"[dim]timeout_minutes={spec.timeout_minutes} browser_heavy={spec.browser_heavy}[/dim]")
+    console.print(f"[dim]run_id={ctx.run_id} timeout_minutes={spec.timeout_minutes} browser_heavy={spec.browser_heavy}[/dim]")
+    log.info("job.started", run_dir=str(ctx.run_dir))
 
-    if spec.browser_heavy:
-        holder = lock_holder()
-        if holder is not None:
-            other_job = holder.get("job_id", "?")
-            other_pid = holder.get("pid", "?")
-            console.print(
-                f"[yellow]Skipped (browser lock held by job={other_job} pid={other_pid}):[/yellow] {job_id}"
-            )
-            return True
-
-    if job_id == "openstat":
-        if not ensure_flaresolverr(log=console.print):
-            console.print(f"[red]OpenSTAT preflight failed — FlareSolverr not available.[/red]")
-            return False
-
-    if job_id == "prism_index":
-        if not ensure_qdrant(log=console.print):
-            console.print(f"[red]Qdrant preflight failed — indexer cannot run.[/red]")
-            return False
-
-    started = time.monotonic()
     try:
         if spec.browser_heavy:
-            with browser_job_lock(job_id) as acquired:
-                if not acquired:
-                    holder = lock_holder() or {}
-                    console.print(
-                        f"[yellow]Skipped (browser lock held by job={holder.get('job_id', '?')} "
-                        f"pid={holder.get('pid', '?')}):[/yellow] {job_id}"
-                    )
-                    return True
+            holder = lock_holder()
+            if holder is not None:
+                other_job = holder.get("job_id", "?")
+                other_pid = holder.get("pid", "?")
+                reason = f"Skipped (browser lock held by job={other_job} pid={other_pid})"
+                console.print(f"[yellow]{reason}[/yellow]")
+                ctx.mark_skipped(reason)
+                log.warning("job.skipped", reason=reason)
+                return True
+
+        if job_id == "openstat":
+            if not ensure_flaresolverr(log=console.print):
+                msg = "OpenSTAT preflight failed — FlareSolverr not available."
+                console.print(f"[red]{msg}[/red]")
+                ctx.mark_failed(message=msg, error_type="PreflightError")
+                log.error("job.preflight_failed", component="flaresolverr")
+                send_run_alert(ctx)
+                return False
+
+        if job_id == "prism_index":
+            if not ensure_qdrant(log=console.print):
+                msg = "Qdrant preflight failed — indexer cannot run."
+                console.print(f"[red]{msg}[/red]")
+                ctx.mark_failed(message=msg, error_type="PreflightError")
+                log.error("job.preflight_failed", component="qdrant")
+                send_run_alert(ctx)
+                return False
+
+        started = time.monotonic()
+        success = False
+        try:
+            if spec.browser_heavy:
+                with browser_job_lock(job_id) as acquired:
+                    if not acquired:
+                        holder = lock_holder() or {}
+                        reason = (
+                            f"Skipped (browser lock held by job={holder.get('job_id', '?')} "
+                            f"pid={holder.get('pid', '?')})"
+                        )
+                        console.print(f"[yellow]{reason}[/yellow]")
+                        ctx.mark_skipped(reason)
+                        log.warning("job.skipped", reason=reason)
+                        return True
+                    with job_env(spec.env_overrides):
+                        runner()
+            else:
                 with job_env(spec.env_overrides):
                     runner()
-        else:
-            with job_env(spec.env_overrides):
-                runner()
-    except Exception as exc:
-        console.print(f"[red]Job failed ({job_id}):[/red] {exc}")
-        console.print(f"[dim]{traceback.format_exc()}[/dim]")
-        return False
-    finally:
-        elapsed = time.monotonic() - started
-        elapsed_min = elapsed / 60.0
-        if elapsed_min > spec.timeout_minutes:
-            console.print(
-                f"[yellow]Warning: job {job_id} exceeded configured timeout "
-                f"({elapsed_min:.1f}m > {spec.timeout_minutes}m)[/yellow]"
-            )
 
-    console.print(f"[green]Job completed:[/green] {job_id}")
-    return True
+            if job_id in JOB_CORPUS_SOURCES:
+                check_quality = validate_quality_enabled()
+                validation = validate_job_corpora(
+                    job_id, log=console.print, check_quality=check_quality
+                )
+                for w in validation.warnings:
+                    ctx.add_warning(w)
+                ctx.set_validation(
+                    list(validation.reports),
+                    passed=validation.passed,
+                    check_quality=check_quality,
+                )
+                if not validation.passed:
+                    console.print(f"[red]Corpus validation failed after {job_id}[/red]")
+                    from src.orchestrator.corpus_validation import validation_failure_summary
+
+                    ctx.mark_failed(
+                        message=validation_failure_summary(validation.reports),
+                        error_type="ValidationError",
+                    )
+                    log.error("validation.failed")
+                    send_run_alert(ctx)
+                    return False
+            else:
+                ctx.write_skipped_validation_report("no_corpus_mapping")
+
+            ctx.mark_ok()
+            success = True
+        except Exception as exc:
+            console.print(f"[red]Job failed ({job_id}):[/red] {exc}")
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
+            ctx.mark_failed(message=str(exc), exc=exc)
+            log.exception("job.failed")
+            send_run_alert(ctx)
+            return False
+        finally:
+            elapsed = time.monotonic() - started
+            elapsed_min = elapsed / 60.0
+            if elapsed_min > spec.timeout_minutes:
+                warn = (
+                    f"Job {job_id} exceeded configured timeout "
+                    f"({elapsed_min:.1f}m > {spec.timeout_minutes}m)"
+                )
+                console.print(f"[yellow]Warning: {warn}[/yellow]")
+                ctx.add_warning(warn)
+                log.warning("job.timeout_exceeded", elapsed_minutes=round(elapsed_min, 1))
+
+        if success:
+            console.print(f"[green]Job completed:[/green] {job_id}")
+            log.info("job.completed", status="ok")
+            send_run_alert(ctx)
+        return success
+    finally:
+        clear_run_context()
 
 
 def run_all(config: OrchestratorConfig | None = None) -> int:

@@ -95,7 +95,55 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve_parser.set_defaults(func=_cmd_serve)
 
+    test_alerts_parser = sub.add_parser(
+        "test-alerts",
+        help="Send a test failure alert to configured Telegram/Discord channels",
+    )
+    test_alerts_parser.add_argument(
+        "--job-id",
+        default="alert_test",
+        help="Job id to simulate in the test alert (e.g. philrice, prism_yield)",
+    )
+    test_alerts_parser.add_argument(
+        "--kind",
+        default="failure",
+        choices=("failure", "success", "warning", "timeout", "validation", "test"),
+        help=(
+            "failure=red, success=green, warning=yellow, timeout=purple, "
+            "validation=orange, test=blue wiring check"
+        ),
+    )
+    test_alerts_parser.set_defaults(func=_cmd_test_alerts)
+
     return parser
+
+
+def _cmd_test_alerts(args: argparse.Namespace) -> int:
+    from src.orchestrator.alerts import (
+        alerts_enabled,
+        discord_configured,
+        send_test_alerts,
+        telegram_configured,
+    )
+
+    if not alerts_enabled():
+        console.print("[red]Set ALERT_ENABLED=true in .env first.[/red]")
+        return 1
+
+    console.print("[cyan]Alert channels configured:[/cyan]")
+    console.print(f"  telegram: {'yes' if telegram_configured() else 'no'}")
+    console.print(f"  discord:  {'yes' if discord_configured() else 'no'}")
+
+    sent = send_test_alerts(job_id=args.job_id, kind=args.kind)
+    if not sent:
+        console.print("[yellow]No channels dispatched. Check .env tokens/URLs.[/yellow]")
+        return 1
+
+    console.print("[green]Test alert sent via:[/green]", ", ".join(sent))
+    for item in sent:
+        if "_failed:" in item:
+            console.print(f"  [red]{item}[/red]")
+    return 0 if not any("_failed:" in s for s in sent) else 1
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
