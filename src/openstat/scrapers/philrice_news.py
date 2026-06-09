@@ -9,6 +9,7 @@ from src.openstat.config import data_path
 from dotenv import load_dotenv
 from rich.console import Console
 from datetime import datetime
+from pathlib import Path
 import os
 import re
 import time
@@ -108,13 +109,40 @@ def _safe_filename_from_date(posted_mm_dd_yy: str, same_day_index: int) -> str:
     return base + ".txt"
 
 
-def _load_checkpoint() -> set:
+_FILENAME_DATE_RE = re.compile(r"^philrice_news_(\d{2}-\d{2}-\d{2})(?:_(\d+))?\.txt$")
+
+
+def _load_scraped_urls() -> list[str]:
+    """URLs already saved — used to skip on resume and to detect new site uploads."""
     data = load_checkpoint(CHECKPOINT_PATH, default={"scraped_urls": []})
-    return set(data.get("scraped_urls", []))
+    urls = data.get("scraped_urls", [])
+    if not isinstance(urls, list):
+        return []
+    return urls
 
 
-def _save_checkpoint(scraped_urls: list):
-    save_checkpoint(CHECKPOINT_PATH, {"scraped_urls": scraped_urls})
+def _save_checkpoint(scraped_urls: list[str]) -> None:
+    """Persist after each article so a stopped run can resume."""
+    save_checkpoint(CHECKPOINT_PATH, {"scraped_urls": sorted(set(scraped_urls))})
+
+
+def _date_count_from_existing_txt(news_dir: Path | None = None) -> dict[str, int]:
+    """
+    Count same-day suffixes already on disk so new runs do not overwrite
+    philrice_news_MM-DD-YY.txt when resuming or when new articles share a date.
+    """
+    root = news_dir or Path(PHILRICE_NEWS_DIR)
+    counts: dict[str, int] = {}
+    if not root.is_dir():
+        return counts
+    for path in root.glob("philrice_news_*.txt"):
+        match = _FILENAME_DATE_RE.match(path.name)
+        if not match:
+            continue
+        date_key = match.group(1)
+        suffix = int(match.group(2) or 1)
+        counts[date_key] = max(counts.get(date_key, 0), suffix)
+    return counts
 
 
 def _collect_news_entries_on_page(page) -> list[tuple[str, str]]:
@@ -194,8 +222,14 @@ def _go_to_next_page(page) -> bool:
 def run():
     console.rule("[bold cyan]PhilRice News – title hanggang HOW DOES THIS POST MAKE YOU FEEL + %")
     os.makedirs(PHILRICE_NEWS_DIR, exist_ok=True)
-    scraped = list(_load_checkpoint())
-    date_count = {}  # MM-DD-YY -> count para same-day _2, _3
+    scraped = _load_scraped_urls()
+    scraped_set = set(scraped)
+    date_count = _date_count_from_existing_txt()
+    if scraped:
+        console.print(
+            f"[dim]Checkpoint: {len(scraped)} URL(s) already scraped "
+            f"({CHECKPOINT_PATH})[/dim]"
+        )
 
     all_entries = []
     launch_args = [
@@ -250,8 +284,12 @@ def run():
                 page_num += 1
                 time.sleep(DELAY_PAGE)
 
-            to_scrape = [(t, u) for t, u in all_entries if u not in scraped]
-            console.print(f"[bold]Articles to scrape: {len(to_scrape)}[/bold]")
+            skipped = sum(1 for _, u in all_entries if u in scraped_set)
+            to_scrape = [(t, u) for t, u in all_entries if u not in scraped_set]
+            console.print(
+                f"[bold]Listing: {len(all_entries)} articles — "
+                f"{skipped} already in checkpoint, {len(to_scrape)} new to fetch[/bold]"
+            )
 
             for title_text, url in to_scrape:
                 try:
@@ -270,7 +308,10 @@ def run():
                     with open(out_path, "w", encoding="utf-8") as f:
                         f.write(body)
                     console.print(f"[green]  {fname}[/green]")
-                    scraped.append(url)
+                    if url not in scraped_set:
+                        scraped.append(url)
+                        scraped_set.add(url)
+                    _save_checkpoint(scraped)
                 except Exception as e:
                     console.print(f"[yellow]  Skip {url[:50]}...: {e}[/yellow]")
                 time.sleep(DELAY_PAGE)
