@@ -2,10 +2,25 @@ import unittest
 
 import pandas as pd
 
+from src.openstat.services.openstat import _process_one_sheet
 from src.services.openstat_cpt import row_to_sentence, tabular_to_cpt_records
 
 
 class OpenStatCptTests(unittest.TestCase):
+    def test_process_one_sheet_empty_unwanted_texts(self) -> None:
+        """Regression: blank UNWANTED_TEXTS must not drop every row."""
+        data = pd.DataFrame(
+            [
+                [None, None, 2020, 2020],
+                [None, None, "January", "February"],
+                ["Abra", "Palay", 10.5, 20.3],
+            ]
+        )
+        result = _process_one_sheet(data, "2M4AFN01", "Cereals", unwanted_texts=[])
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertGreater(len(result), 0)
+
     def test_row_to_sentence_with_price(self) -> None:
         row = pd.Series(
             {

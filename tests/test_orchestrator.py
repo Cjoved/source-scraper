@@ -11,6 +11,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from src.orchestrator.config import load_config
+from src.orchestrator.corpus_validation import ValidationResult
 from src.orchestrator.jobs import JOB_ORDER, run_all, run_job, validate_config
 from src.orchestrator.lock import browser_job_lock, lock_holder, lock_path_for_tests
 from src.orchestrator.preflight import ensure_flaresolverr, ensure_qdrant, is_flaresolverr_healthy, is_qdrant_healthy
@@ -44,9 +45,23 @@ class ScheduleTests(unittest.TestCase):
         self.assertFalse(job_due_now("0 2 * * 0", "Asia/Manila", now=when))
 
 
+def _validation_ok() -> ValidationResult:
+    return ValidationResult(passed=True, reports=(), sources_checked=(), warnings=())
+
+
+def _validation_fail() -> ValidationResult:
+    return ValidationResult(passed=False, reports=(), sources_checked=(), warnings=())
+
+
 class RunJobTests(unittest.TestCase):
+    @patch("src.orchestrator.jobs.send_run_alert")
+    @patch("src.orchestrator.jobs.validate_job_corpora", return_value=_validation_ok())
     @patch.dict("src.orchestrator.jobs._RUNNERS", {"philrice": mock.MagicMock()}, clear=False)
-    def test_run_job_success(self) -> None:
+    def test_run_job_success(
+        self,
+        _mock_validate: mock.MagicMock,
+        _mock_alert: mock.MagicMock,
+    ) -> None:
         from src.orchestrator import jobs
 
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
@@ -81,6 +96,13 @@ class CliParserTests(unittest.TestCase):
         args = parser.parse_args(["serve", "--interval", "30"])
         self.assertEqual(args.command, "serve")
         self.assertEqual(args.interval, 30)
+
+    def test_test_alerts_subcommand(self) -> None:
+        from src.orchestrator.cli import build_parser
+
+        parser = build_parser()
+        args = parser.parse_args(["test-alerts"])
+        self.assertEqual(args.command, "test-alerts")
 
 
 class BrowserLockTests(unittest.TestCase):
@@ -147,18 +169,28 @@ class PreflightTests(unittest.TestCase):
 
 
 class OpenstatPreflightJobTests(unittest.TestCase):
+    @patch("src.orchestrator.jobs.send_run_alert")
     @patch("src.orchestrator.jobs.ensure_flaresolverr", return_value=False)
-    def test_openstat_fails_when_flaresolverr_down(self, _mock_ensure: mock.MagicMock) -> None:
+    def test_openstat_fails_when_flaresolverr_down(
+        self, _mock_ensure: mock.MagicMock, _mock_alert: mock.MagicMock
+    ) -> None:
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
         self.assertFalse(run_job("openstat", cfg))
 
+    @patch("src.orchestrator.jobs.send_run_alert")
+    @patch("src.orchestrator.jobs.validate_job_corpora", return_value=_validation_ok())
     @patch("src.orchestrator.jobs.ensure_flaresolverr", return_value=True)
     @patch.dict(
         "src.orchestrator.jobs._RUNNERS",
         {"openstat": mock.MagicMock()},
         clear=False,
     )
-    def test_openstat_runs_when_flaresolverr_up(self, _mock_ensure: mock.MagicMock) -> None:
+    def test_openstat_runs_when_flaresolverr_up(
+        self,
+        _mock_ensure: mock.MagicMock,
+        _mock_validate: mock.MagicMock,
+        _mock_alert: mock.MagicMock,
+    ) -> None:
         from src.orchestrator import jobs
 
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
@@ -177,9 +209,14 @@ class BrowserLockJobTests(unittest.TestCase):
         if lock_path.is_file():
             lock_path.unlink()
 
+    @patch("src.orchestrator.jobs.send_run_alert")
     @patch("src.orchestrator.jobs.lock_holder")
     @patch.dict("src.orchestrator.jobs._RUNNERS", {"philrice": mock.MagicMock()}, clear=False)
-    def test_run_job_skips_when_browser_lock_held(self, mock_holder: mock.MagicMock) -> None:
+    def test_run_job_skips_when_browser_lock_held(
+        self,
+        mock_holder: mock.MagicMock,
+        _mock_alert: mock.MagicMock,
+    ) -> None:
         from src.orchestrator import jobs
 
         mock_holder.return_value = {"pid": 12345, "job_id": "irri"}
@@ -188,19 +225,52 @@ class BrowserLockJobTests(unittest.TestCase):
         jobs._RUNNERS["philrice"].assert_not_called()
 
 
+class CorpusValidationHookTests(unittest.TestCase):
+    @patch("src.orchestrator.jobs.send_run_alert")
+    @patch("src.orchestrator.jobs.validate_job_corpora", return_value=_validation_fail())
+    @patch.dict("src.orchestrator.jobs._RUNNERS", {"philrice": mock.MagicMock()}, clear=False)
+    def test_run_job_fails_when_corpus_invalid(
+        self,
+        mock_validate: mock.MagicMock,
+        _mock_alert: mock.MagicMock,
+    ) -> None:
+        cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
+        self.assertFalse(run_job("philrice", cfg))
+        mock_validate.assert_called_once()
+        self.assertEqual(mock_validate.call_args.args[0], "philrice")
+
+    @patch("src.orchestrator.jobs.send_run_alert")
+    @patch("src.orchestrator.jobs.validate_job_corpora", return_value=_validation_ok())
+    @patch.dict("src.orchestrator.jobs._RUNNERS", {"prism_yield": mock.MagicMock()}, clear=False)
+    def test_prism_yield_skips_corpus_validation(
+        self,
+        mock_validate: mock.MagicMock,
+        _mock_alert: mock.MagicMock,
+    ) -> None:
+        cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
+        self.assertTrue(run_job("prism_yield", cfg))
+        mock_validate.assert_not_called()
+
+
 class PrismIndexJobTests(unittest.TestCase):
+    @patch("src.orchestrator.jobs.send_run_alert")
     @patch("src.orchestrator.jobs.ensure_qdrant", return_value=False)
-    def test_prism_index_fails_when_qdrant_down(self, _mock_ensure: mock.MagicMock) -> None:
+    def test_prism_index_fails_when_qdrant_down(
+        self, _mock_ensure: mock.MagicMock, _mock_alert: mock.MagicMock
+    ) -> None:
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
         self.assertFalse(run_job("prism_index", cfg))
 
+    @patch("src.orchestrator.jobs.send_run_alert")
     @patch("src.orchestrator.jobs.ensure_qdrant", return_value=True)
     @patch.dict(
         "src.orchestrator.jobs._RUNNERS",
         {"prism_index": mock.MagicMock()},
         clear=False,
     )
-    def test_prism_index_runs_when_qdrant_up(self, _mock_ensure: mock.MagicMock) -> None:
+    def test_prism_index_runs_when_qdrant_up(
+        self, _mock_ensure: mock.MagicMock, _mock_alert: mock.MagicMock
+    ) -> None:
         from src.orchestrator import jobs
 
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
