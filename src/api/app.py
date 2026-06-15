@@ -64,17 +64,16 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 _API_DESCRIPTION = """
-PRiSM rice yield API — versioned under `/v1/`.
+PRiSM rice yield + PSA OpenSTAT farmgate price API — versioned under `/v1/`.
 
-This service exposes the scraped PRiSM dataset over HTTP, backed by Qdrant:
+This service exposes scraped datasets over HTTP, backed by Qdrant:
 
-- **Structured queries** for tables and dashboards (`/v1/yield`, `/v1/yield/metadata`).
-- **Deterministic aggregations** for numeric questions (`/v1/yield/summary`).
-- **Bulk exports** as NDJSON or CSV streams (`/v1/yield/export`).
-- **Hybrid semantic search** (dense + sparse fused via RRF) for natural-language
-  queries (`/v1/knowledge/search`).
-- **Operator endpoints** for index health (`/v1/index/status`,
-  `/v1/index/refresh-metadata`).
+- **Yield structured queries** (`/v1/yield`, `/v1/yield/metadata`, `/v1/yield/summary`, `/v1/yield/export`).
+- **Yield hybrid search** (`/v1/knowledge/search`).
+- **OpenSTAT price structured queries** (`/v1/prices`, `/v1/prices/metadata`, `/v1/prices/summary`, `/v1/prices/export`).
+- **OpenSTAT price hybrid search** (`/v1/prices/search`).
+- **Narrative agri corpus search** (`/v1/corpus/search` — PhilRice, News, PinoyRice, IRRI, PRiSM browser).
+- **Operator endpoints** (`/v1/index/status`, `/v1/index/refresh-metadata`, `/v1/prices/refresh-metadata`).
 
 Authentication uses `X-API-Key`. Two scopes: **public** (read endpoints) and
 **admin** (export + index admin). Set `API_AUTH_DISABLED=true` to bypass during
@@ -95,10 +94,24 @@ _OPENAPI_TAGS = [
         ),
     },
     {
+        "name": "prices",
+        "description": (
+            "Structured queries over PSA OpenSTAT farmgate prices: paginated list, "
+            "filter metadata, deterministic aggregation, export, and hybrid search."
+        ),
+    },
+    {
         "name": "knowledge",
         "description": (
             "Hybrid (dense + sparse) semantic search for natural-language queries. "
             "Pure retrieval — no summarization or LLM generation in this version."
+        ),
+    },
+    {
+        "name": "corpus",
+        "description": (
+            "Hybrid semantic search over the unified agri RAG corpus "
+            "(PhilRice, News, PinoyRice, IRRI, PRiSM browser chunks)."
         ),
     },
     {

@@ -12,6 +12,7 @@ from src.api.auth import require_admin
 from src.api.deps import (
     get_csv_source_path,
     get_metadata_cache,
+    get_openstat_csv_path,
     get_qdrant_store,
 )
 from src.api.metadata_cache import MetadataCache, build_snapshot_from_rows
@@ -48,7 +49,7 @@ def _count_csv_rows(path: Path) -> int | None:
     summary="Index counts, schema version, and source CSV freshness",
     description=(
         "Operator-focused view of the indexing state. Returns:\n\n"
-        "- Per-collection point counts (`prism_yield_records`, `prism_yield_knowledge`).\n"
+        "- Per-collection point counts (yield, OpenSTAT prices, corpus RAG).\n"
         "- Configured vector names per collection (helps spot misconfigurations).\n"
         "- The current `schema_version` from settings.\n"
         "- Source CSV path, row count, and last modification timestamp.\n\n"
@@ -64,6 +65,7 @@ def index_status(
     _scope: object = Depends(require_admin),
     store: QdrantStoreProtocol = Depends(get_qdrant_store),
     csv_path: Path = Depends(get_csv_source_path),
+    openstat_csv_path: Path = Depends(get_openstat_csv_path),
 ) -> IndexStatusResponse:
     del request
     collections = [
@@ -80,6 +82,9 @@ def index_status(
         source_file=str(csv_path),
         source_rows=_count_csv_rows(csv_path),
         source_mtime=_format_mtime(csv_path),
+        openstat_source_file=str(openstat_csv_path),
+        openstat_source_rows=_count_csv_rows(openstat_csv_path),
+        openstat_source_mtime=_format_mtime(openstat_csv_path),
     )
 
 

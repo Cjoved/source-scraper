@@ -161,6 +161,179 @@ class KnowledgeSearchResponse(BaseModel):
     took_ms: float
 
 
+class CorpusSearchRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {"query": "rice variety recommendations", "limit": 5},
+                {
+                    "query": "PhilRice news on hybrid seeds",
+                    "limit": 10,
+                    "source_ids": ["philrice_news", "philrice"],
+                    "min_score": 0.0,
+                },
+            ]
+        },
+    )
+
+    query: Annotated[str, Field(min_length=1, max_length=2000, description="Natural-language query.")]
+    limit: Annotated[int, Field(gt=0, le=50, description="Top-K hits to return.")] = 10
+    source_ids: list[str] | None = Field(
+        default=None,
+        description="Optional filter to one or more corpus source ids.",
+    )
+    min_score: Annotated[float, Field(ge=0.0, le=1.0, description="Drop hits with fused score below this.")] = 0.0
+
+
+class CorpusHit(BaseModel):
+    score: float
+    text: str
+    source_id: str
+    doc_id: str
+    url: str | None = None
+    title: str | None = None
+    filename: str | None = None
+    page: int | None = None
+
+
+class CorpusSearchResponse(BaseModel):
+    query: str
+    limit: int
+    source_ids: list[str] | None = None
+    hits: list[CorpusHit]
+    took_ms: float
+
+
+class PriceRow(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    geolocation: str
+    commodity_type: str
+    commodity: str
+    year: int
+    month: str
+    price_php_per_kg: float | None = None
+    source: str = "openstat_psa"
+
+
+class PriceListResponse(BaseModel):
+    items: list[PriceRow]
+    total: int
+    next_offset: int | None = None
+
+
+class PriceMetadataResponse(BaseModel):
+    years: list[int]
+    months: list[str]
+    geolocations: list[str]
+    commodity_types: list[str]
+    commodities_by_type: dict[str, list[str]]
+
+
+class PriceExtremum(BaseModel):
+    value: float
+    year: int
+    month: str
+    geolocation: str
+    commodity: str
+
+
+class PriceSummaryOverall(BaseModel):
+    avg_price_php_per_kg: float
+    min: PriceExtremum | None = None
+    max: PriceExtremum | None = None
+    row_count: int
+    priced_row_count: int
+
+
+class PriceSummaryByYear(BaseModel):
+    year: int
+    avg_price_php_per_kg: float
+    row_count: int
+
+
+class PriceSummaryByMonth(BaseModel):
+    year: int
+    month: str
+    avg_price_php_per_kg: float
+    row_count: int
+
+
+class PriceSummaryScope(BaseModel):
+    geolocation: str | None = None
+    commodity_type: str | None = None
+    commodity: str | None = None
+    year_min: int | None = None
+    year_max: int | None = None
+    month: str | None = None
+
+
+class PriceSummaryResponse(BaseModel):
+    scope: PriceSummaryScope
+    overall: PriceSummaryOverall
+    by_year: list[PriceSummaryByYear]
+    by_month: list[PriceSummaryByMonth]
+
+
+class PriceFilters(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    geolocation: str | None = None
+    commodity_type: str | None = None
+    commodity: str | None = None
+    year_min: int | None = Field(default=None, ge=1900, le=2100)
+    year_max: int | None = Field(default=None, ge=1900, le=2100)
+    month: str | None = None
+
+
+class PriceSearchRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {"query": "palay farmgate price Abra 2023", "limit": 5},
+                {
+                    "query": "corn price CAR",
+                    "limit": 10,
+                    "filters": {"geolocation": "Abra", "year_min": 2020, "year_max": 2023},
+                },
+            ]
+        },
+    )
+
+    query: Annotated[str, Field(min_length=1, max_length=2000)]
+    limit: Annotated[int, Field(gt=0, le=100)] = 10
+    filters: PriceFilters | None = None
+    min_score: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
+
+
+class PriceHit(BaseModel):
+    score: float
+    text: str
+    geolocation: str
+    commodity_type: str
+    commodity: str
+    year: int
+    month: str
+    price_php_per_kg: float | None = None
+
+
+class PriceSearchResponse(BaseModel):
+    query: str
+    filters: PriceFilters | None = None
+    hits: list[PriceHit]
+    took_ms: float
+
+
+class RefreshPriceMetadataResponse(BaseModel):
+    refreshed: bool
+    years_count: int
+    geolocations_count: int
+    commodities_count: int
+    took_ms: float
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     qdrant: Literal["reachable", "unreachable"]
@@ -180,6 +353,9 @@ class IndexStatusResponse(BaseModel):
     source_file: str
     source_rows: int | None = None
     source_mtime: str | None = None
+    openstat_source_file: str | None = None
+    openstat_source_rows: int | None = None
+    openstat_source_mtime: str | None = None
 
 
 class RefreshMetadataResponse(BaseModel):

@@ -19,6 +19,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src.indexing.corpus_manifest import RAG_CORPUS_SOURCES
 from src.services.config import PROJECT_ROOT, data_path
 from src.utils.jsonl import iter_jsonl_records
 
@@ -38,28 +39,31 @@ class CorpusSource:
     min_text_chars: int | None = None
 
 
-# Keep in sync with docs/DATA_FORMAT_SPEC.md
-CORPUS_SOURCES: tuple[CorpusSource, ...] = (
+# RAG sources from corpus_manifest (P3.8a); extras are validation-only (not indexed).
+_EXTRA_VALIDATION_SOURCES: tuple[CorpusSource, ...] = (
     CorpusSource(
-        "philrice",
-        "philrice_processed/philrice_corpus.jsonl",
-        "PhilRice PDF",
+        "openstat_lines",
+        "openstat_processed/openstat_corpus.jsonl",
+        "OpenSTAT line-level CPT (not RAG-indexed)",
         min_text_chars=80,
     ),
-    CorpusSource("philrice_news", "philrice_news_processed/philrice_news_corpus.jsonl", "PhilRice News"),
-    CorpusSource("pinoyrice", "pinoyrice_processed/pinoyrice_corpus.jsonl", "PinoyRice text"),
     CorpusSource("pinoyrice_chunked", "pinoyrice_processed/pinoyrice_corpus_chunked.jsonl", "PinoyRice chunked"),
     CorpusSource("pinoyrice_pdfs", "pinoyrice_processed/pinoyrice_pdfs_corpus.jsonl", "PinoyRice PDFs"),
-    CorpusSource("irri", "irri_processed/irri_corpus.jsonl", "IRRI Philippines"),
-    CorpusSource(
-        "openstat",
-        "openstat_processed/openstat_corpus.jsonl",
-        "OpenSTAT CPT",
-        min_text_chars=80,
-    ),
     CorpusSource("prism", "prism_processed/prism_corpus.jsonl", "PRiSM browser raw"),
-    CorpusSource("prism_chunked", "prism_processed/prism_corpus_chunked.jsonl", "PRiSM chunked"),
 )
+
+_CORPUS_SOURCES_FROM_RAG: tuple[CorpusSource, ...] = tuple(
+    CorpusSource(
+        rag.source_id,
+        rag.relpath,
+        rag.description,
+        min_text_chars=rag.min_text_chars,
+    )
+    for rag in RAG_CORPUS_SOURCES
+)
+
+# Keep in sync with docs/DATA_FORMAT_SPEC.md
+CORPUS_SOURCES: tuple[CorpusSource, ...] = _CORPUS_SOURCES_FROM_RAG + _EXTRA_VALIDATION_SOURCES
 
 SOURCE_BY_ID = {s.id: s for s in CORPUS_SOURCES}
 

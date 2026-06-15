@@ -55,7 +55,10 @@ class Settings(BaseSettings):
     qdrant_timeout_seconds: float = Field(default=30.0, gt=0)
     qdrant_records_collection: str = Field(default="prism_yield_records")
     qdrant_knowledge_collection: str = Field(default="prism_yield_knowledge")
-    qdrant_local_inference_batch_size: int = Field(default=128, gt=0)
+    qdrant_price_records_collection: str = Field(default="openstat_price_records")
+    qdrant_price_knowledge_collection: str = Field(default="openstat_price_knowledge")
+    corpus_rag_collection: str = Field(default="agri_corpus_rag")
+    qdrant_local_inference_batch_size: int = Field(default=256, gt=0)
 
     embedding_dense_model: str = Field(default="BAAI/bge-small-en-v1.5")
     embedding_sparse_model: str = Field(default="Qdrant/bm25")
@@ -66,6 +69,7 @@ class Settings(BaseSettings):
 
     schema_version: str = Field(default="v1")
     csv_source_relpath: str = Field(default="prism_processed/prism_yield_export.csv")
+    openstat_csv_source_relpath: str = Field(default="openstat_processed/openstat_table.csv")
 
     @field_validator("api_log_level")
     @classmethod

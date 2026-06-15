@@ -44,8 +44,25 @@ def get_csv_source_path(settings: Settings = Depends(get_settings)) -> Path:
     return data_path(*parts)
 
 
+def get_openstat_csv_path(settings: Settings = Depends(get_settings)) -> Path:
+    parts = settings.openstat_csv_source_relpath.split("/")
+    return data_path(*parts)
+
+
+@lru_cache(maxsize=1)
+def _price_metadata_cache_singleton() -> "PriceMetadataCache":
+    from src.api.price_metadata_cache import PriceMetadataCache
+
+    return PriceMetadataCache()
+
+
+def get_price_metadata_cache() -> "PriceMetadataCache":
+    return _price_metadata_cache_singleton()
+
+
 def reset_dependency_singletons() -> None:
     """Test helper: clear cached singletons so each test sees a fresh state."""
     _metadata_cache_singleton.cache_clear()
+    _price_metadata_cache_singleton.cache_clear()
     _qdrant_store_singleton.cache_clear()
     get_settings.cache_clear()

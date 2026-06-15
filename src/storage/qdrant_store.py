@@ -43,6 +43,21 @@ class YieldFilter:
 
 
 @dataclass(frozen=True)
+class PriceFilter:
+    """Filter parameters for OpenSTAT farmgate price listing and search."""
+
+    geolocation: str | None = None
+    commodity_type: str | None = None
+    commodity: str | None = None
+    year: int | None = None
+    year_min: int | None = None
+    year_max: int | None = None
+    month: str | None = None
+    min_price: float | None = None
+    max_price: float | None = None
+
+
+@dataclass(frozen=True)
 class StructuredPoint:
     point_id: str
     payload: dict[str, Any]
@@ -53,6 +68,20 @@ class KnowledgePoint:
     point_id: str
     text: str
     payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CorpusPoint:
+    point_id: str
+    text: str
+    payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CorpusFilter:
+    """Filter parameters for unified RAG corpus search."""
+
+    source_ids: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +101,14 @@ class CollectionStats:
 _DUMMY_VECTOR: list[float] = [0.0]
 
 _POINT_ID_NAMESPACE = uuid.UUID("8b9c2d4a-1f3e-4b7c-9a5d-6e8f0a1b2c3d")
+_PRICE_POINT_ID_NAMESPACE = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+_CORPUS_POINT_ID_NAMESPACE = uuid.UUID("c4e8f1a2-6b3d-4e5f-8a9c-0d1e2f3a4b5c")
+
+
+def build_corpus_point_id(source_id: str, doc_id: str) -> str:
+    """Deterministic UUIDv5 for a CPT chunk in ``agri_corpus_rag``."""
+    raw = f"{source_id}|{doc_id}"
+    return str(uuid.uuid5(_CORPUS_POINT_ID_NAMESPACE, raw))
 
 
 def build_point_id(
@@ -91,12 +128,25 @@ def build_point_id(
     return str(uuid.uuid5(_POINT_ID_NAMESPACE, raw))
 
 
+def build_price_point_id(
+    geolocation: str,
+    commodity: str,
+    year: int,
+    month: str,
+) -> str:
+    """Deterministic UUIDv5 for an OpenSTAT price row."""
+    raw = f"{geolocation}|{commodity}|{year}|{month}"
+    return str(uuid.uuid5(_PRICE_POINT_ID_NAMESPACE, raw))
+
+
 class QdrantStoreProtocol(Protocol):
     def ping(self) -> bool: ...
 
     def list_collection_names(self) -> list[str]: ...
 
     def ensure_collections(self) -> None: ...
+
+    def ensure_price_collections(self) -> None: ...
 
     def count_yield_rows(self, flt: YieldFilter) -> int: ...
 
@@ -124,6 +174,45 @@ class QdrantStoreProtocol(Protocol):
     def upsert_yield_records(self, points: Iterable[StructuredPoint]) -> int: ...
 
     def upsert_yield_knowledge(self, points: Iterable[KnowledgePoint]) -> int: ...
+
+    def count_price_rows(self, flt: PriceFilter) -> int: ...
+
+    def scroll_price_rows(
+        self,
+        flt: PriceFilter,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[dict[str, Any]], int | None]: ...
+
+    def iter_price_rows(
+        self,
+        flt: PriceFilter,
+        max_rows: int | None = None,
+    ) -> Iterator[dict[str, Any]]: ...
+
+    def search_prices(
+        self,
+        query_text: str,
+        flt: PriceFilter,
+        limit: int,
+        min_score: float,
+    ) -> list[KnowledgeHitRecord]: ...
+
+    def upsert_price_records(self, points: Iterable[StructuredPoint]) -> int: ...
+
+    def upsert_price_knowledge(self, points: Iterable[KnowledgePoint]) -> int: ...
+
+    def ensure_corpus_collection(self) -> None: ...
+
+    def upsert_corpus(self, points: Iterable[CorpusPoint]) -> int: ...
+
+    def search_corpus(
+        self,
+        query_text: str,
+        flt: CorpusFilter,
+        limit: int,
+        min_score: float,
+    ) -> list[KnowledgeHitRecord]: ...
 
     def collection_stats(self) -> list[CollectionStats]: ...
 
@@ -155,6 +244,18 @@ class QdrantStore:
     @property
     def knowledge_name(self) -> str:
         return self._settings.qdrant_knowledge_collection
+
+    @property
+    def corpus_name(self) -> str:
+        return self._settings.corpus_rag_collection
+
+    @property
+    def price_records_name(self) -> str:
+        return self._settings.qdrant_price_records_collection
+
+    @property
+    def price_knowledge_name(self) -> str:
+        return self._settings.qdrant_price_knowledge_collection
 
     def ping(self) -> bool:
         try:
@@ -207,6 +308,90 @@ class QdrantStore:
 
         del PayloadSchemaType
 
+    def ensure_price_collections(self) -> None:
+        from qdrant_client.models import (
+            Distance,
+            PayloadSchemaType,
+            VectorParams,
+        )
+
+        existing = set(self.list_collection_names())
+
+        if self.price_records_name not in existing:
+            self._client.create_collection(
+                collection_name=self.price_records_name,
+                vectors_config=VectorParams(size=1, distance=Distance.COSINE),
+            )
+        self._create_price_payload_indexes(self.price_records_name)
+
+        if self.price_knowledge_name not in existing:
+            vectors_config = self._client.get_fastembed_vector_params()
+            sparse_config = self._client.get_fastembed_sparse_vector_params()
+            self._client.create_collection(
+                collection_name=self.price_knowledge_name,
+                vectors_config=vectors_config,
+                sparse_vectors_config=sparse_config,
+            )
+        self._create_price_payload_indexes(self.price_knowledge_name)
+
+        del PayloadSchemaType
+
+    def ensure_corpus_collection(self, *, recreate: bool = False) -> None:
+        from qdrant_client.models import PayloadSchemaType
+
+        if recreate and self.corpus_name in self.list_collection_names():
+            self._client.delete_collection(collection_name=self.corpus_name)
+
+        existing = set(self.list_collection_names())
+        if self.corpus_name not in existing:
+            vectors_config = self._client.get_fastembed_vector_params()
+            sparse_config = self._client.get_fastembed_sparse_vector_params()
+            self._client.create_collection(
+                collection_name=self.corpus_name,
+                vectors_config=vectors_config,
+                sparse_vectors_config=sparse_config,
+            )
+        self._create_corpus_payload_indexes(self.corpus_name)
+        del PayloadSchemaType
+
+    def _create_corpus_payload_indexes(self, collection: str) -> None:
+        from qdrant_client.models import PayloadSchemaType
+
+        fields: dict[str, PayloadSchemaType] = {
+            "source_id": PayloadSchemaType.KEYWORD,
+            "doc_id": PayloadSchemaType.KEYWORD,
+        }
+        for field_name, schema_type in fields.items():
+            try:
+                self._client.create_payload_index(
+                    collection_name=collection,
+                    field_name=field_name,
+                    field_schema=schema_type,
+                )
+            except Exception:
+                continue
+
+    def _create_price_payload_indexes(self, collection: str) -> None:
+        from qdrant_client.models import PayloadSchemaType
+
+        fields: dict[str, PayloadSchemaType] = {
+            "year": PayloadSchemaType.INTEGER,
+            "month": PayloadSchemaType.KEYWORD,
+            "geolocation": PayloadSchemaType.KEYWORD,
+            "commodity": PayloadSchemaType.KEYWORD,
+            "commodity_type": PayloadSchemaType.KEYWORD,
+            "price_php_per_kg": PayloadSchemaType.FLOAT,
+        }
+        for field_name, schema_type in fields.items():
+            try:
+                self._client.create_payload_index(
+                    collection_name=collection,
+                    field_name=field_name,
+                    field_schema=schema_type,
+                )
+            except Exception:
+                continue
+
     def _create_payload_indexes(self, collection: str) -> None:
         from qdrant_client.models import PayloadSchemaType
 
@@ -257,6 +442,47 @@ class QdrantStore:
         if not must:
             return None
         return Filter(must=must)
+
+    def _build_price_filter(self, flt: PriceFilter) -> Any | None:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue, Range
+
+        must: list[Any] = []
+
+        if flt.geolocation:
+            must.append(
+                FieldCondition(key="geolocation", match=MatchValue(value=flt.geolocation))
+            )
+        if flt.commodity_type:
+            must.append(
+                FieldCondition(key="commodity_type", match=MatchValue(value=flt.commodity_type))
+            )
+        if flt.commodity:
+            must.append(FieldCondition(key="commodity", match=MatchValue(value=flt.commodity)))
+        if flt.year is not None:
+            must.append(FieldCondition(key="year", match=MatchValue(value=flt.year)))
+        if flt.year_min is not None or flt.year_max is not None:
+            rng = Range(gte=flt.year_min, lte=flt.year_max)
+            must.append(FieldCondition(key="year", range=rng))
+        if flt.month:
+            must.append(FieldCondition(key="month", match=MatchValue(value=flt.month)))
+        if flt.min_price is not None or flt.max_price is not None:
+            rng = Range(gte=flt.min_price, lte=flt.max_price)
+            must.append(FieldCondition(key="price_php_per_kg", range=rng))
+
+        if not must:
+            return None
+        return Filter(must=must)
+
+    def _build_corpus_filter(self, flt: CorpusFilter) -> Any | None:
+        from qdrant_client.models import FieldCondition, Filter, MatchAny
+
+        if not flt.source_ids:
+            return None
+        return Filter(
+            must=[
+                FieldCondition(key="source_id", match=MatchAny(any=list(flt.source_ids))),
+            ]
+        )
 
     def count_yield_rows(self, flt: YieldFilter) -> int:
         try:
@@ -394,6 +620,203 @@ class QdrantStore:
             hits.append(KnowledgeHitRecord(score=score, payload=payload))
         return hits
 
+    def count_price_rows(self, flt: PriceFilter) -> int:
+        try:
+            result = self._client.count(
+                collection_name=self.price_records_name,
+                count_filter=self._build_price_filter(flt),
+                exact=True,
+            )
+        except Exception as exc:
+            raise self._wrap_qdrant_error(exc) from exc
+        return int(result.count)
+
+    def scroll_price_rows(
+        self,
+        flt: PriceFilter,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        try:
+            points, _ = self._client.scroll(
+                collection_name=self.price_records_name,
+                scroll_filter=self._build_price_filter(flt),
+                limit=limit + offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception as exc:
+            raise self._wrap_qdrant_error(exc) from exc
+        sliced = points[offset : offset + limit]
+        next_offset = offset + limit if len(points) > offset + limit else None
+        return [dict(p.payload or {}) for p in sliced], next_offset
+
+    def iter_price_rows(
+        self,
+        flt: PriceFilter,
+        max_rows: int | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        page_size = 512
+        next_page_token: Any = None
+        emitted = 0
+        qdrant_filter = self._build_price_filter(flt)
+
+        while True:
+            try:
+                points, next_page_token = self._client.scroll(
+                    collection_name=self.price_records_name,
+                    scroll_filter=qdrant_filter,
+                    limit=page_size,
+                    offset=next_page_token,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+            except Exception as exc:
+                raise self._wrap_qdrant_error(exc) from exc
+
+            for point in points:
+                yield dict(point.payload or {})
+                emitted += 1
+                if max_rows is not None and emitted >= max_rows:
+                    return
+
+            if next_page_token is None or not points:
+                return
+
+    def search_prices(
+        self,
+        query_text: str,
+        flt: PriceFilter,
+        limit: int,
+        min_score: float,
+    ) -> list[KnowledgeHitRecord]:
+        """Hybrid retrieval over the OpenSTAT price knowledge collection."""
+        from qdrant_client import models
+
+        dense_name = self._client.get_vector_field_name()
+        sparse_name = self._client.get_sparse_vector_field_name()
+        qfilter = self._build_price_filter(flt)
+        prefetch_limit = max(limit * self._settings.hybrid_prefetch_multiplier, limit)
+        fusion = (
+            models.Fusion.RRF
+            if self._settings.hybrid_fusion == "rrf"
+            else models.Fusion.DBSF
+        )
+
+        prefetch: list[Any] = []
+        if dense_name:
+            prefetch.append(
+                models.Prefetch(
+                    query=models.Document(
+                        text=query_text,
+                        model=self._settings.embedding_dense_model,
+                    ),
+                    using=dense_name,
+                    limit=prefetch_limit,
+                    filter=qfilter,
+                )
+            )
+        if sparse_name:
+            prefetch.append(
+                models.Prefetch(
+                    query=models.Document(
+                        text=query_text,
+                        model=self._settings.embedding_sparse_model,
+                    ),
+                    using=sparse_name,
+                    limit=prefetch_limit,
+                    filter=qfilter,
+                )
+            )
+
+        try:
+            response = self._client.query_points(
+                collection_name=self.price_knowledge_name,
+                prefetch=prefetch,
+                query=models.FusionQuery(fusion=fusion),
+                query_filter=qfilter,
+                limit=limit,
+                with_payload=True,
+            )
+        except Exception as exc:
+            raise self._wrap_qdrant_error(exc) from exc
+
+        hits: list[KnowledgeHitRecord] = []
+        for point in response.points:
+            score = float(getattr(point, "score", 0.0) or 0.0)
+            if score < min_score:
+                continue
+            payload = dict(getattr(point, "payload", None) or {})
+            hits.append(KnowledgeHitRecord(score=score, payload=payload))
+        return hits
+
+    def search_corpus(
+        self,
+        query_text: str,
+        flt: CorpusFilter,
+        limit: int,
+        min_score: float,
+    ) -> list[KnowledgeHitRecord]:
+        """Hybrid retrieval over the unified RAG corpus collection."""
+        from qdrant_client import models
+
+        dense_name = self._client.get_vector_field_name()
+        sparse_name = self._client.get_sparse_vector_field_name()
+        qfilter = self._build_corpus_filter(flt)
+        prefetch_limit = max(limit * self._settings.hybrid_prefetch_multiplier, limit)
+        fusion = (
+            models.Fusion.RRF
+            if self._settings.hybrid_fusion == "rrf"
+            else models.Fusion.DBSF
+        )
+
+        prefetch: list[Any] = []
+        if dense_name:
+            prefetch.append(
+                models.Prefetch(
+                    query=models.Document(
+                        text=query_text,
+                        model=self._settings.embedding_dense_model,
+                    ),
+                    using=dense_name,
+                    limit=prefetch_limit,
+                    filter=qfilter,
+                )
+            )
+        if sparse_name:
+            prefetch.append(
+                models.Prefetch(
+                    query=models.Document(
+                        text=query_text,
+                        model=self._settings.embedding_sparse_model,
+                    ),
+                    using=sparse_name,
+                    limit=prefetch_limit,
+                    filter=qfilter,
+                )
+            )
+
+        try:
+            response = self._client.query_points(
+                collection_name=self.corpus_name,
+                prefetch=prefetch,
+                query=models.FusionQuery(fusion=fusion),
+                query_filter=qfilter,
+                limit=limit,
+                with_payload=True,
+            )
+        except Exception as exc:
+            raise self._wrap_qdrant_error(exc) from exc
+
+        hits: list[KnowledgeHitRecord] = []
+        for point in response.points:
+            score = float(getattr(point, "score", 0.0) or 0.0)
+            if score < min_score:
+                continue
+            payload = dict(getattr(point, "payload", None) or {})
+            hits.append(KnowledgeHitRecord(score=score, payload=payload))
+        return hits
+
     def upsert_yield_records(self, points: Iterable[StructuredPoint]) -> int:
         from qdrant_client.models import PointStruct
 
@@ -409,20 +832,74 @@ class QdrantStore:
             raise self._wrap_qdrant_error(exc) from exc
         return len(batch)
 
+    def upsert_price_records(self, points: Iterable[StructuredPoint]) -> int:
+        from qdrant_client.models import PointStruct
+
+        batch = [
+            PointStruct(id=p.point_id, vector=_DUMMY_VECTOR, payload=p.payload)
+            for p in points
+        ]
+        if not batch:
+            return 0
+        try:
+            self._client.upsert(collection_name=self.price_records_name, points=batch)
+        except Exception as exc:
+            raise self._wrap_qdrant_error(exc) from exc
+        return len(batch)
+
+    def upsert_price_knowledge(self, points: Iterable[KnowledgePoint]) -> int:
+        materialized = list(points)
+        if not materialized:
+            return 0
+        batch = self._build_inference_points(materialized)
+        try:
+            self._client.upsert(collection_name=self.price_knowledge_name, points=batch)
+        except Exception as exc:
+            raise self._wrap_qdrant_error(exc) from exc
+        return len(materialized)
+
+    def _build_inference_points(
+        self,
+        materialized: list[KnowledgePoint] | list[CorpusPoint],
+    ) -> list[Any]:
+        """Build PointStructs with Document vectors for local FastEmbed inference."""
+        from qdrant_client import models
+
+        dense_name = self._client.get_vector_field_name()
+        sparse_name = self._client.get_sparse_vector_field_name()
+        dense_model = self._settings.embedding_dense_model
+        sparse_model = self._settings.embedding_sparse_model
+
+        points: list[Any] = []
+        for point in materialized:
+            vector: dict[str, Any] = {
+                dense_name: models.Document(text=point.text, model=dense_model),
+            }
+            if sparse_name:
+                vector[sparse_name] = models.Document(text=point.text, model=sparse_model)
+            points.append(
+                models.PointStruct(id=point.point_id, vector=vector, payload=point.payload)
+            )
+        return points
+
     def upsert_yield_knowledge(self, points: Iterable[KnowledgePoint]) -> int:
         materialized = list(points)
         if not materialized:
             return 0
-        documents = [p.text for p in materialized]
-        metadata = [p.payload for p in materialized]
-        ids = [p.point_id for p in materialized]
+        batch = self._build_inference_points(materialized)
         try:
-            self._client.add(
-                collection_name=self.knowledge_name,
-                documents=documents,
-                metadata=metadata,
-                ids=ids,
-            )
+            self._client.upsert(collection_name=self.knowledge_name, points=batch)
+        except Exception as exc:
+            raise self._wrap_qdrant_error(exc) from exc
+        return len(materialized)
+
+    def upsert_corpus(self, points: Iterable[CorpusPoint]) -> int:
+        materialized = list(points)
+        if not materialized:
+            return 0
+        batch = self._build_inference_points(materialized)
+        try:
+            self._client.upsert(collection_name=self.corpus_name, points=batch)
         except Exception as exc:
             raise self._wrap_qdrant_error(exc) from exc
         return len(materialized)
@@ -432,6 +909,9 @@ class QdrantStore:
         for name, vectors in (
             (self.records_name, None),
             (self.knowledge_name, ["dense", "sparse"]),
+            (self.price_records_name, None),
+            (self.price_knowledge_name, ["dense", "sparse"]),
+            (self.corpus_name, ["dense", "sparse"]),
         ):
             try:
                 info = self._client.count(collection_name=name, exact=True)
