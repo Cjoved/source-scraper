@@ -19,6 +19,7 @@
 - `src/formatter/`: CSV shaping/writers.
 - `src/services/`: config, checkpoints, logging, PRiSM/OpenSTAT processing (`prism.py`, `openstat_cpt.py`).
 - `src/utils/`: canonical shared helpers (`net`, `url_id`, `text_chunk`, `cpt`, `jsonl`).
+- `src/indexing/`: yield CSV indexer (`yield_indexer.py`), OpenSTAT price indexer (`price_indexer.py`), and unified RAG corpus indexer (`corpus_rag_indexer.py`, manifest in `corpus_manifest.py`).
 - OpenStat `agri_corpus/` re-exports `chunk_text`, `make_cpt_record`, `safe_id_from_url` from `src/utils/`; site-specific PDF/txt helpers stay there.
 - `docs/migration/`: OpenStat migration runbooks, acceptance matrix, and rollback manifest.
 - `tests/`: unit tests.
@@ -26,7 +27,7 @@
 
 ## Standard Commands
 - Install core deps: `uv sync`
-- Install orchestrator deps: `uv sync --extra orchestrator` (add `--extra api` for `prism_index`)
+- Install orchestrator deps: `uv sync --extra orchestrator` (add `--extra api` for `prism_index`, `openstat_index`, `corpus_rag_index`)
 - Install browser deps: `uv sync --extra browser`
 - Install Scrapling fetchers: `uv run scrapling install`
 - Run app: `uv run python main.py`
@@ -35,6 +36,9 @@
 - Test alerts: `uv run python -m src.orchestrator test-alerts` (Telegram/Discord from `.env`)
 - Run artifacts: `data/runs/<run_id>/manifest.json` + `validation_report.json`; logs: `data/logs/orchestrator.jsonl`
 - After monthly yield export, `prism_index` refreshes Qdrant for the API (or `python main.py index`)
+- After monthly scrapes, `corpus_rag_index` indexes five narrative JSONL corpora into `agri_corpus_rag` (or `python -m src.indexing.corpus_rag_indexer`). OpenSTAT outputs `openstat_table.csv` indexed via `openstat_index` into `openstat_price_records` / `openstat_price_knowledge` (not RAG).
+- OpenSTAT price API: `GET /v1/prices`, `POST /v1/prices/search` (after `openstat_index`)
+- Corpus RAG search: `POST /v1/corpus/search` (yield search stays on `/v1/knowledge/search`)
 - Scheduler + API stack: `docs/SCHEDULER_SETUP.md` (cron, Task Scheduler, browser lock, FlareSolverr, Qdrant)
 - Run tests: `uv run python -m unittest discover -s tests -p "test_*.py" -v`
 - Validate corpora: `uv run python -m src.scripts.validate_corpus` (see `docs/DATA_FORMAT_SPEC.md`)
@@ -51,6 +55,8 @@
 - Yield export CSV: `data/prism_processed/prism_yield_export.csv`
 - Browser tables CSV: `data/prism_processed/prism_browser_tables.csv`
 - Browser corpus JSONL: `data/prism_processed/prism_corpus.jsonl`
+- Unified RAG index collection: `agri_corpus_rag` (env `CORPUS_RAG_COLLECTION`, default `agri_corpus_rag`)
+- OpenSTAT price collections: `openstat_price_records`, `openstat_price_knowledge` (env `QDRANT_PRICE_RECORDS_COLLECTION`, `QDRANT_PRICE_KNOWLEDGE_COLLECTION`)
 - Checkpoints:
   - `data/checkpoints/prism_yield_export_checkpoint.json`
   - `data/checkpoints/prism_checkpoint.json`
