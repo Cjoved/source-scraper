@@ -35,13 +35,28 @@ def run_philrice() -> None:
 
 
 def run_philrice_news() -> None:
+    import os
+
     from src.openstat.scrapers import philrice_news as scraper_philrice_news
     from src.openstat.services import philrice_news as processing_philrice_news
 
     console.rule("[bold cyan]PhilRice News – Scrape[/bold cyan]")
-    scraper_philrice_news.run()
+    status = scraper_philrice_news.run()
     console.rule("[bold cyan]PhilRice News – Process[/bold cyan]")
     processing_philrice_news.run()
+    if status.incomplete:
+        msg = (
+            f"PhilRice News scrape incomplete: {status.verified_urls}/{status.site_total} "
+            f"verified URLs ({status.txt_files} .txt on disk). Re-run to continue."
+        )
+        fail = os.getenv("PHILRICE_NEWS_FAIL_IF_INCOMPLETE", "true").strip().lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+        if fail:
+            raise RuntimeError(msg)
+        console.print(f"[yellow]{msg}[/yellow]")
 
 
 def run_pinoyrice() -> None:

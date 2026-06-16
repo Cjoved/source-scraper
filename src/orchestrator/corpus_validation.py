@@ -19,8 +19,7 @@ JOB_CORPUS_SOURCES: dict[str, tuple[str, ...]] = {
     "philrice_news": ("philrice_news",),
     "pinoyrice": ("pinoyrice", "pinoyrice_pdfs"),
     "irri": ("irri",),
-    "openstat": ("openstat",),
-    "prism_scrape": ("prism_chunked",),
+    "prism_scrape": ("prism_browser",),
 }
 
 # Optional sources: validate when file exists; warn if missing (not a failure).

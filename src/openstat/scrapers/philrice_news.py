@@ -9,6 +9,7 @@ from src.openstat.config import data_path
 from dotenv import load_dotenv
 from rich.console import Console
 from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
 import os
 import re
@@ -25,12 +26,38 @@ PHILRICE_NEWS_URL = "https://www.philrice.gov.ph/news/"
 PHILRICE_NEWS_DIR = data_path("philrice_news")
 CHECKPOINT_PATH = data_path("checkpoints", "philrice_news_checkpoint.json")
 
-DELAY_PAGE = int(os.getenv("PHILRICE_NEWS_DELAY", "3"))
+DELAY_PAGE = int(os.getenv("PHILRICE_NEWS_DELAY", "6"))
+DELAY_ARTICLE = int(os.getenv("PHILRICE_NEWS_ARTICLE_DELAY", "8"))
+POST_GOTO_MS = int(os.getenv("PHILRICE_NEWS_POST_GOTO_MS", "5000"))
+LISTING_SETTLE_MS = int(os.getenv("PHILRICE_NEWS_LISTING_SETTLE_MS", "6000"))
+PAGE_TIMEOUT_MS = int(os.getenv("PHILRICE_NEWS_TIMEOUT_MS", "90000"))
+GOTO_RETRIES = int(os.getenv("PHILRICE_NEWS_GOTO_RETRIES", "3"))
 
 _MONTH = {
     "jan": "01", "feb": "02", "mar": "03", "apr": "04", "may": "05", "jun": "06",
     "jul": "07", "aug": "08", "sep": "09", "oct": "10", "nov": "11", "dec": "12",
 }
+
+
+def _goto_with_retry(page, url: str, *, label: str = "page") -> object | None:
+    """PhilRice gov.ph is often slow — retry with relaxed wait_until on later attempts."""
+    wait_modes = ("domcontentloaded", "domcontentloaded", "commit")
+    last_exc: Exception | None = None
+    for attempt in range(1, GOTO_RETRIES + 1):
+        wait_until = wait_modes[min(attempt - 1, len(wait_modes) - 1)]
+        try:
+            return page.goto(url, wait_until=wait_until, timeout=PAGE_TIMEOUT_MS)
+        except Exception as exc:
+            last_exc = exc
+            console.print(
+                f"[yellow]  {label} load attempt {attempt}/{GOTO_RETRIES} failed "
+                f"({wait_until}): {exc}[/yellow]"
+            )
+            if attempt < GOTO_RETRIES:
+                time.sleep(DELAY_PAGE * attempt)
+    if last_exc is not None:
+        raise last_exc
+    return None
 
 
 def _parse_posted_date(page) -> str | None:
@@ -110,20 +137,144 @@ def _safe_filename_from_date(posted_mm_dd_yy: str, same_day_index: int) -> str:
 
 
 _FILENAME_DATE_RE = re.compile(r"^philrice_news_(\d{2}-\d{2}-\d{2})(?:_(\d+))?\.txt$")
+SCRAPE_STATUS_PATH = data_path("checkpoints", "philrice_news_scrape_status.json")
+
+
+@dataclass(frozen=True)
+class PhilRiceNewsScrapeStatus:
+    site_total: int
+    verified_urls: int
+    dead_urls: int
+    txt_files: int
+    fetched_this_run: int
+    skipped_checkpoint: int
+    incomplete: bool
+
+
+def _http_response_not_found(response: object | None) -> bool:
+    status = getattr(response, "status", None)
+    return isinstance(status, int) and status >= 400
+
+
+def _page_is_not_found(page) -> bool:
+    """Detect nginx/WordPress 404 pages (Playwright does not throw on HTTP 404)."""
+    try:
+        title = (page.title() or "").lower()
+        if "404" in title and "not found" in title:
+            return True
+        body = (page.locator("body").inner_text(timeout=3000) or "").lower()[:800]
+        if "404 not found" in body:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _load_checkpoint_state() -> tuple[list[str], dict[str, str], set[str]]:
+    """
+    Load checkpoint and verify each URL still has its .txt on disk.
+
+    Legacy checkpoints (scraped_urls only, no url_to_file) are not trusted —
+    they caused false "Done" when URLs were marked scraped but files were missing.
+    """
+    data = load_checkpoint(
+        CHECKPOINT_PATH,
+        default={"scraped_urls": [], "url_to_file": {}, "dead_urls": []},
+    )
+    dead_raw = data.get("dead_urls") or []
+    dead_urls = {str(u) for u in dead_raw} if isinstance(dead_raw, list) else set()
+    url_to_file_raw = data.get("url_to_file") or {}
+    url_to_file = (
+        {str(k): str(v) for k, v in url_to_file_raw.items()}
+        if isinstance(url_to_file_raw, dict)
+        else {}
+    )
+    legacy_urls = data.get("scraped_urls") or []
+    news_dir = Path(PHILRICE_NEWS_DIR)
+
+    if legacy_urls and not url_to_file:
+        txt_count = len(list(news_dir.glob("philrice_news_*.txt")))
+        console.print(
+            f"[yellow]Legacy checkpoint ({len(legacy_urls)} URLs) has no file map — "
+            f"only {txt_count} .txt on disk. Ignoring stale URL list; will re-fetch missing articles.[/yellow]"
+        )
+        return [], {}, dead_urls
+
+    verified_urls: list[str] = []
+    verified_map: dict[str, str] = {}
+    missing_files = 0
+    for url, fname in url_to_file.items():
+        if (news_dir / fname).is_file():
+            verified_urls.append(url)
+            verified_map[url] = fname
+        else:
+            missing_files += 1
+
+    if missing_files:
+        console.print(
+            f"[yellow]Checkpoint repair: {missing_files} URL(s) had no .txt — "
+            f"will re-fetch on this run.[/yellow]"
+        )
+        _save_checkpoint_state(verified_urls, verified_map, dead_urls)
+
+    return verified_urls, verified_map, dead_urls
+
+
+def _save_checkpoint_state(
+    scraped_urls: list[str],
+    url_to_file: dict[str, str],
+    dead_urls: set[str] | list[str] | None = None,
+) -> None:
+    dead_list = sorted(set(dead_urls or []))
+    save_checkpoint(
+        CHECKPOINT_PATH,
+        {
+            "scraped_urls": sorted(set(scraped_urls)),
+            "url_to_file": {u: url_to_file[u] for u in scraped_urls if u in url_to_file},
+            "dead_urls": dead_list,
+        },
+    )
+
+
+def _write_scrape_status(status: PhilRiceNewsScrapeStatus) -> None:
+    import json
+
+    path = Path(SCRAPE_STATUS_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "site_total": status.site_total,
+                "verified_urls": status.verified_urls,
+                "txt_files": status.txt_files,
+                "fetched_this_run": status.fetched_this_run,
+                "skipped_checkpoint": status.skipped_checkpoint,
+                "dead_urls": status.dead_urls,
+                "incomplete": status.incomplete,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
 
 def _load_scraped_urls() -> list[str]:
-    """URLs already saved — used to skip on resume and to detect new site uploads."""
-    data = load_checkpoint(CHECKPOINT_PATH, default={"scraped_urls": []})
-    urls = data.get("scraped_urls", [])
-    if not isinstance(urls, list):
-        return []
+    urls, _, _ = _load_checkpoint_state()
     return urls
 
 
-def _save_checkpoint(scraped_urls: list[str]) -> None:
-    """Persist after each article so a stopped run can resume."""
-    save_checkpoint(CHECKPOINT_PATH, {"scraped_urls": sorted(set(scraped_urls))})
+def _save_checkpoint(
+    scraped_urls: list[str],
+    url_to_file: dict[str, str] | None = None,
+    dead_urls: set[str] | None = None,
+) -> None:
+    if url_to_file is None or dead_urls is None:
+        _, url_to_file_loaded, dead_loaded = _load_checkpoint_state()
+        if url_to_file is None:
+            url_to_file = url_to_file_loaded
+        if dead_urls is None:
+            dead_urls = dead_loaded
+    _save_checkpoint_state(scraped_urls, url_to_file, dead_urls)
 
 
 def _date_count_from_existing_txt(news_dir: Path | None = None) -> dict[str, int]:
@@ -219,17 +370,27 @@ def _go_to_next_page(page) -> bool:
 
 
 @require_internet
-def run():
+def run() -> PhilRiceNewsScrapeStatus:
     console.rule("[bold cyan]PhilRice News – title hanggang HOW DOES THIS POST MAKE YOU FEEL + %")
     os.makedirs(PHILRICE_NEWS_DIR, exist_ok=True)
-    scraped = _load_scraped_urls()
+    scraped, url_to_file, dead_urls = _load_checkpoint_state()
     scraped_set = set(scraped)
+    dead_this_run = 0
     date_count = _date_count_from_existing_txt()
-    if scraped:
+    txt_on_disk = len(list(Path(PHILRICE_NEWS_DIR).glob("philrice_news_*.txt")))
+    fetched_this_run = 0
+    site_total = 0
+    skipped_checkpoint = 0
+
+    if scraped or dead_urls:
         console.print(
-            f"[dim]Checkpoint: {len(scraped)} URL(s) already scraped "
-            f"({CHECKPOINT_PATH})[/dim]"
+            f"[dim]Checkpoint: {len(scraped)} verified URL(s), {len(dead_urls)} dead/404, "
+            f"{txt_on_disk} .txt on disk ({CHECKPOINT_PATH})[/dim]"
         )
+    console.print(
+        f"[dim]Delays: listing={DELAY_PAGE}s, article={DELAY_ARTICLE}s, "
+        f"post-goto={POST_GOTO_MS}ms[/dim]"
+    )
 
     all_entries = []
     launch_args = [
@@ -256,12 +417,12 @@ def run():
         if HAS_STEALTH:
             apply_page_stealth(page)
 
-        page.set_default_timeout(30000)
+        page.set_default_timeout(PAGE_TIMEOUT_MS)
 
         try:
             console.print(f"[bold]Listing: {PHILRICE_NEWS_URL}[/bold]")
-            page.goto(PHILRICE_NEWS_URL, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(4000)
+            _goto_with_retry(page, PHILRICE_NEWS_URL, label="News listing")
+            page.wait_for_timeout(LISTING_SETTLE_MS)
             try:
                 page.wait_for_selector("main a[href], #content a[href], .content a[href]", timeout=10000)
             except Exception:
@@ -285,16 +446,27 @@ def run():
                 time.sleep(DELAY_PAGE)
 
             skipped = sum(1 for _, u in all_entries if u in scraped_set)
-            to_scrape = [(t, u) for t, u in all_entries if u not in scraped_set]
+            skipped_checkpoint = skipped
+            site_total = len(all_entries)
+            dead_skipped = sum(1 for _, u in all_entries if u in dead_urls)
+            to_scrape = [
+                (t, u) for t, u in all_entries if u not in scraped_set and u not in dead_urls
+            ]
             console.print(
                 f"[bold]Listing: {len(all_entries)} articles — "
-                f"{skipped} already in checkpoint, {len(to_scrape)} new to fetch[/bold]"
+                f"{skipped} verified, {dead_skipped} dead/404, {len(to_scrape)} to fetch[/bold]"
             )
 
             for title_text, url in to_scrape:
                 try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                    page.wait_for_timeout(2000)
+                    response = _goto_with_retry(page, url, label="Article")
+                    page.wait_for_timeout(POST_GOTO_MS)
+                    if _http_response_not_found(response) or _page_is_not_found(page):
+                        console.print(f"[yellow]  Dead link (404), skipping:[/yellow] {url}")
+                        dead_urls.add(url)
+                        dead_this_run += 1
+                        _save_checkpoint(scraped, url_to_file, dead_urls)
+                        continue
                     posted = _parse_posted_date(page)
                     if not posted:
                         posted = datetime.now().strftime("%m-%d-%y")
@@ -311,25 +483,64 @@ def run():
                     if url not in scraped_set:
                         scraped.append(url)
                         scraped_set.add(url)
-                    _save_checkpoint(scraped)
+                        url_to_file[url] = fname
+                        fetched_this_run += 1
+                    _save_checkpoint(scraped, url_to_file, dead_urls)
                 except Exception as e:
                     console.print(f"[yellow]  Skip {url[:50]}...: {e}[/yellow]")
-                time.sleep(DELAY_PAGE)
+                time.sleep(DELAY_ARTICLE)
 
-            _save_checkpoint(scraped)
+            _save_checkpoint(scraped, url_to_file, dead_urls)
 
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
-            _save_checkpoint(scraped)
+            _save_checkpoint(scraped, url_to_file, dead_urls)
+            raise
         finally:
             page.close()
             browser.close()
 
-    # (per-article files in PHILRICE_NEWS_DIR) – isang linya bawat headline (yung “button” text lang)
-    console.rule("[bold green]Done")
+    txt_on_disk = len(list(Path(PHILRICE_NEWS_DIR).glob("philrice_news_*.txt")))
+    verified = len(scraped_set)
+    dead_count = len(dead_urls)
+    accounted = verified + dead_count
+    incomplete = site_total > 0 and accounted < site_total
+    status = PhilRiceNewsScrapeStatus(
+        site_total=site_total,
+        verified_urls=verified,
+        dead_urls=dead_count,
+        txt_files=txt_on_disk,
+        fetched_this_run=fetched_this_run,
+        skipped_checkpoint=skipped_checkpoint,
+        incomplete=incomplete,
+    )
+    _write_scrape_status(status)
+
+    console.rule("[bold]PhilRice News – scrape summary[/bold]")
     console.print(f"Output → [cyan]{os.path.abspath(PHILRICE_NEWS_DIR)}[/cyan]")
-    console.print(f"Files: philrice_news_MM-DD-YY.txt (title → HOW DOES THIS POST MAKE YOU FEEL + %)")
-    console.print(f"Scraped: [bold]{len(scraped)}[/bold] articles")
+    console.print(
+        f"Site listing: [bold]{site_total}[/bold] | "
+        f"Verified: [bold]{verified}[/bold] | "
+        f"Dead/404: [bold]{dead_count}[/bold] | "
+        f".txt on disk: [bold]{txt_on_disk}[/bold] | "
+        f"Fetched this run: [bold]{fetched_this_run}[/bold]"
+    )
+    if dead_this_run:
+        console.print(
+            f"[dim]{dead_this_run} dead link(s) marked this run (removed from PhilRice site).[/dim]"
+        )
+    if incomplete:
+        remaining = site_total - accounted
+        console.print(
+            f"[yellow]Scrape NOT complete — {remaining} article(s) still to fetch. "
+            f"Re-run the same job to continue (checkpoint saves after each article).[/yellow]"
+        )
+    else:
+        console.print(
+            "[green]Scrape complete — all listing URLs accounted for "
+            "(verified .txt or dead/404).[/green]"
+        )
+    return status
 
 
 if __name__ == "__main__":

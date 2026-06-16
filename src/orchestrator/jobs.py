@@ -34,6 +34,10 @@ from src.orchestrator.runners import (
     run_prism_scrape,
     run_prism_yield,
     run_prism_index,
+    run_corpus_rag_index_job,
+    run_openstat_index_job,
+    run_corpus_release,
+    run_corpus_backup_wasabi,
 )
 from src.orchestrator.schedule import job_due_now
 
@@ -46,9 +50,13 @@ JOB_ORDER: tuple[str, ...] = (
     "pinoyrice",
     "irri",
     "openstat",
+    "openstat_index",
     "prism_scrape",
     "prism_yield",
     "prism_index",
+    "corpus_rag_index",
+    "corpus_release",
+    "corpus_backup_wasabi",
 )
 
 _RUNNERS: dict[str, Callable[[], None]] = {
@@ -57,9 +65,13 @@ _RUNNERS: dict[str, Callable[[], None]] = {
     "pinoyrice": run_pinoyrice,
     "irri": run_irri,
     "openstat": run_openstat,
+    "openstat_index": run_openstat_index_job,
     "prism_scrape": run_prism_scrape,
     "prism_yield": run_prism_yield,
     "prism_index": run_prism_index,
+    "corpus_rag_index": run_corpus_rag_index_job,
+    "corpus_release": run_corpus_release,
+    "corpus_backup_wasabi": run_corpus_backup_wasabi,
 }
 
 
@@ -120,7 +132,7 @@ def run_job(job_id: str, config: OrchestratorConfig | None = None) -> bool:
                 send_run_alert(ctx)
                 return False
 
-        if job_id == "prism_index":
+        if job_id in ("prism_index", "corpus_rag_index", "openstat_index"):
             if not ensure_qdrant(log=console.print):
                 msg = "Qdrant preflight failed — indexer cannot run."
                 console.print(f"[red]{msg}[/red]")
@@ -131,6 +143,7 @@ def run_job(job_id: str, config: OrchestratorConfig | None = None) -> bool:
 
         started = time.monotonic()
         success = False
+        runner_result: object | None = None
         try:
             if spec.browser_heavy:
                 with browser_job_lock(job_id) as acquired:
@@ -145,10 +158,16 @@ def run_job(job_id: str, config: OrchestratorConfig | None = None) -> bool:
                         log.warning("job.skipped", reason=reason)
                         return True
                     with job_env(spec.env_overrides):
-                        runner()
+                        runner_result = runner()
             else:
                 with job_env(spec.env_overrides):
-                    runner()
+                    runner_result = runner()
+
+            if job_id == "corpus_rag_index" and runner_result is not None:
+                from src.indexing.corpus_rag_indexer import CorpusIndexStats
+
+                if isinstance(runner_result, CorpusIndexStats):
+                    ctx.set_corpus_index(runner_result.to_dict())
 
             if job_id in JOB_CORPUS_SOURCES:
                 check_quality = validate_quality_enabled()

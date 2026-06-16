@@ -143,9 +143,11 @@ JOB_ALERT_LABELS: dict[str, str] = {
     "pinoyrice": "PinoyRice",
     "irri": "IRRI",
     "openstat": "OpenSTAT",
+    "openstat_index": "OpenSTAT Price Index",
     "prism_scrape": "PRiSM Browser",
     "prism_yield": "PRiSM Yield Export",
     "prism_index": "PRiSM Index",
+    "corpus_rag_index": "Corpus RAG Index",
     "alert_test": "Test Alert",
 }
 
@@ -155,9 +157,11 @@ JOB_ALERT_EMOJI: dict[str, str] = {
     "pinoyrice": "🍚",
     "irri": "🔬",
     "openstat": "📊",
+    "openstat_index": "💰",
     "prism_scrape": "🌐",
     "prism_yield": "📈",
     "prism_index": "📇",
+    "corpus_rag_index": "📚",
     "alert_test": "🔔",
 }
 

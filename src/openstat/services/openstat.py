@@ -264,11 +264,10 @@ def run(folder=None):
 
     console = Console()
     processed_dir = data_path("openstat_processed")
-    corpus_path = os.path.join(processed_dir, "openstat_corpus.jsonl")
     table_csv = os.path.join(processed_dir, "openstat_table.csv")
 
-    if os.path.isfile(corpus_path) and os.path.getsize(corpus_path) > 0:
-        console.print("[dim]openstat_corpus.jsonl already present — skip process step.[/dim]")
+    if os.path.isfile(table_csv) and os.path.getsize(table_csv) > 0:
+        console.print("[dim]openstat_table.csv already present — skip process step.[/dim]")
         return
 
     if os.path.isfile(table_csv):

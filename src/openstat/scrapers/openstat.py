@@ -416,10 +416,6 @@ def scrape_all():
         table_csv = os.path.join(processed_dir, "openstat_table.csv")
         final_df.to_csv(table_csv, index=False)
         console.print(f"[bold green]✔ Saved table CSV: {table_csv}[/bold green]")
-
-        from src.services.openstat_cpt import run as run_openstat_cpt
-
-        run_openstat_cpt(final_df)
     else:
         console.print("[bold red]No data was scraped![/bold red]")
 

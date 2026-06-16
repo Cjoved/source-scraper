@@ -48,6 +48,7 @@ class RunContext:
     error: dict[str, str] | None = None
     validation_reports: list[FileReport] = field(default_factory=list)
     validation_passed: bool | None = None
+    corpus_index: dict[str, Any] | None = None
     skip_reason: str | None = None
 
     @classmethod
@@ -121,6 +122,10 @@ class RunContext:
         self.warnings.append(message)
         self._write_manifest()
 
+    def set_corpus_index(self, stats: dict[str, Any]) -> None:
+        self.corpus_index = stats
+        self._write_manifest()
+
     def _finish(self) -> None:
         self.ended_at = datetime.now(UTC)
         self.duration_seconds = round(
@@ -178,6 +183,8 @@ class RunContext:
                 "passed": self.validation_passed,
                 "sources_checked": [r.source_id for r in self.validation_reports],
             }
+        if self.corpus_index is not None:
+            payload["corpus_index"] = self.corpus_index
         if self.error:
             payload["error"] = self.error
         return payload
