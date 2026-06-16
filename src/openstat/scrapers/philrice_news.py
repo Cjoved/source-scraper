@@ -1,6 +1,7 @@
 """
 PhilRice News scraper – bawat article: text mula title hanggang (kasama) ang
-"HOW DOES THIS POST MAKE YOU FEEL?" at mga percentage. Filename = philrice_news_MM-DD-YY.txt (posted date).
+"HOW DOES THIS POST MAKE YOU FEEL?" at mga percentage.
+Filename = article title + posted date (e.g. ``Rice training expands support_2026-03-11.txt``).
 """
 from playwright.sync_api import sync_playwright
 from src.openstat.agri_corpus.scraper_utils import load_checkpoint, save_checkpoint
@@ -14,6 +15,7 @@ from pathlib import Path
 import os
 import re
 import time
+import urllib.parse
 
 from src.openstat.utils.stealth import apply_page_stealth, stealth_available
 
@@ -128,15 +130,57 @@ def _extract_article_text_to_feel_section(page) -> str:
     return ""
 
 
-def _safe_filename_from_date(posted_mm_dd_yy: str, same_day_index: int) -> str:
-    """e.g. philrice_news_03-11-26.txt o philrice_news_03-11-26_2.txt"""
-    base = f"philrice_news_{posted_mm_dd_yy}"
-    if same_day_index > 1:
-        base += f"_{same_day_index}"
-    return base + ".txt"
+def _posted_date_to_iso(posted_mm_dd_yy: str) -> str:
+    """Convert MM-DD-YY (from page) to YYYY-MM-DD for filenames."""
+    parts = posted_mm_dd_yy.split("-")
+    if len(parts) != 3:
+        return posted_mm_dd_yy
+    mm, dd, yy = parts
+    century = "20" if len(yy) == 2 else ""
+    return f"{century}{yy}-{mm}-{dd}"
 
 
-_FILENAME_DATE_RE = re.compile(r"^philrice_news_(\d{2}-\d{2}-\d{2})(?:_(\d+))?\.txt$")
+def _safe_filename_from_title_and_date(
+    title: str,
+    posted_mm_dd_yy: str,
+    url: str,
+    existing: set[str],
+) -> str:
+    """
+    Readable .txt name from headline + posted date.
+    Collisions get ``_2``, ``_3``, … (same title/date or resume runs).
+    """
+    date_part = _posted_date_to_iso(posted_mm_dd_yy)
+    safe_title = ""
+    if title and title.strip():
+        safe_title = re.sub(r'[<>:"/\\|?*]', "_", title.strip())
+        safe_title = re.sub(r"\s+", " ", safe_title).strip()[:100]
+
+    if not safe_title:
+        try:
+            path = (urllib.parse.urlparse(url).path or "").strip("/")
+            slug = path.replace("/", "_").strip("_") if path else ""
+            safe_title = re.sub(r"[^\w\-_.]", "_", slug)[:100] if slug else ""
+        except Exception:
+            safe_title = ""
+    if not safe_title:
+        safe_title = "philrice_news_article"
+
+    base = f"{safe_title}_{date_part}"
+    candidate = f"{base}.txt"
+    if candidate not in existing:
+        existing.add(candidate)
+        return candidate
+
+    n = 2
+    while True:
+        candidate = f"{base}_{n}.txt"
+        if candidate not in existing:
+            existing.add(candidate)
+            return candidate
+        n += 1
+
+
 SCRAPE_STATUS_PATH = data_path("checkpoints", "philrice_news_scrape_status.json")
 
 
@@ -193,7 +237,7 @@ def _load_checkpoint_state() -> tuple[list[str], dict[str, str], set[str]]:
     news_dir = Path(PHILRICE_NEWS_DIR)
 
     if legacy_urls and not url_to_file:
-        txt_count = len(list(news_dir.glob("philrice_news_*.txt")))
+        txt_count = len(list(news_dir.glob("*.txt")))
         console.print(
             f"[yellow]Legacy checkpoint ({len(legacy_urls)} URLs) has no file map — "
             f"only {txt_count} .txt on disk. Ignoring stale URL list; will re-fetch missing articles.[/yellow]"
@@ -277,23 +321,12 @@ def _save_checkpoint(
     _save_checkpoint_state(scraped_urls, url_to_file, dead_urls)
 
 
-def _date_count_from_existing_txt(news_dir: Path | None = None) -> dict[str, int]:
-    """
-    Count same-day suffixes already on disk so new runs do not overwrite
-    philrice_news_MM-DD-YY.txt when resuming or when new articles share a date.
-    """
+def _existing_txt_filenames(news_dir: Path | None = None) -> set[str]:
+    """Filenames already on disk — used to avoid overwriting on resume."""
     root = news_dir or Path(PHILRICE_NEWS_DIR)
-    counts: dict[str, int] = {}
     if not root.is_dir():
-        return counts
-    for path in root.glob("philrice_news_*.txt"):
-        match = _FILENAME_DATE_RE.match(path.name)
-        if not match:
-            continue
-        date_key = match.group(1)
-        suffix = int(match.group(2) or 1)
-        counts[date_key] = max(counts.get(date_key, 0), suffix)
-    return counts
+        return set()
+    return {path.name for path in root.glob("*.txt")}
 
 
 def _collect_news_entries_on_page(page) -> list[tuple[str, str]]:
@@ -376,8 +409,8 @@ def run() -> PhilRiceNewsScrapeStatus:
     scraped, url_to_file, dead_urls = _load_checkpoint_state()
     scraped_set = set(scraped)
     dead_this_run = 0
-    date_count = _date_count_from_existing_txt()
-    txt_on_disk = len(list(Path(PHILRICE_NEWS_DIR).glob("philrice_news_*.txt")))
+    existing_filenames = _existing_txt_filenames()
+    txt_on_disk = len(existing_filenames)
     fetched_this_run = 0
     site_total = 0
     skipped_checkpoint = 0
@@ -470,9 +503,9 @@ def run() -> PhilRiceNewsScrapeStatus:
                     posted = _parse_posted_date(page)
                     if not posted:
                         posted = datetime.now().strftime("%m-%d-%y")
-                    date_count[posted] = date_count.get(posted, 0) + 1
-                    same_day = date_count[posted]
-                    fname = _safe_filename_from_date(posted, same_day)
+                    fname = _safe_filename_from_title_and_date(
+                        title_text, posted, url, existing_filenames
+                    )
                     out_path = os.path.join(PHILRICE_NEWS_DIR, fname)
                     body = _extract_article_text_to_feel_section(page)
                     if not body:
@@ -500,7 +533,7 @@ def run() -> PhilRiceNewsScrapeStatus:
             page.close()
             browser.close()
 
-    txt_on_disk = len(list(Path(PHILRICE_NEWS_DIR).glob("philrice_news_*.txt")))
+    txt_on_disk = len(_existing_txt_filenames())
     verified = len(scraped_set)
     dead_count = len(dead_urls)
     accounted = verified + dead_count

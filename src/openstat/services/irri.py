@@ -5,6 +5,8 @@ May cleaning muna: tanggalin noise (URL/Title header, SHARE, footer contact) bag
 import os
 import re
 import json
+import hashlib
+import urllib.parse
 from pathlib import Path
 
 from rich.console import Console
@@ -74,6 +76,27 @@ def _safe_doc_id(clean_title: str, max_len: int = 100) -> str:
     return (s[:max_len] if max_len else s) or "irri_unknown"
 
 
+def _url_slug_for_id(url: str, max_len: int = 56) -> str:
+    """Extract stable URL slug suffix to disambiguate same-title IRRI articles."""
+    if not url:
+        return ""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        path = (parsed.path or "").strip("/")
+        if not path:
+            return ""
+        slug = path.split("/")[-1].strip()
+        if not slug:
+            return ""
+        slug = re.sub(r"[^\w\-]", "_", slug.lower())
+        slug = re.sub(r"_+", "_", slug).strip("_")
+        digest = hashlib.sha1(slug.encode("utf-8")).hexdigest()[:8]
+        core = slug[:max_len]
+        return f"{core}_{digest}"
+    except Exception:
+        return ""
+
+
 def _clean_body(body: str, clean_title: str = "") -> str:
     """
     Linisin body: tanggalin duplicate title line, date + SHARE, footer (For more information...),
@@ -133,10 +156,14 @@ def txt_to_cpt_records(txt_path: str) -> list[dict]:
         return []
     if not raw:
         return []
-    _url, clean_title, text = _clean_irri_text(raw)
+    url, clean_title, text = _clean_irri_text(raw)
     if not text or len(text) < MIN_CHUNK_CHARS:
         return []
     base_id = _safe_doc_id(clean_title, max_len=100)
+    url_slug = _url_slug_for_id(url, max_len=48)
+    if url_slug and not base_id.endswith(url_slug):
+        # Keep readable title-based ids but make collisions deterministic.
+        base_id = f"{base_id}_{url_slug}"
     return text_to_cpt_records(
         text,
         source=SOURCE_NAME,
