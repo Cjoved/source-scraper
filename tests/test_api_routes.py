@@ -129,7 +129,16 @@ class TestAdminRoutes(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         names = {c["name"] for c in body["collections"]}
-        self.assertEqual(names, {"prism_yield_records", "prism_yield_knowledge"})
+        self.assertEqual(
+            names,
+            {
+                "prism_yield_records",
+                "prism_yield_knowledge",
+                "openstat_price_records",
+                "openstat_price_knowledge",
+                "agri_corpus_rag",
+            },
+        )
 
     def test_refresh_metadata(self) -> None:
         client, _ = make_client(seed_rows=sample_rows())

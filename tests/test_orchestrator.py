@@ -20,10 +20,10 @@ from src.services.config import PROJECT_ROOT
 
 
 class OrchestratorConfigTests(unittest.TestCase):
-    def test_load_default_yaml_has_eight_jobs(self) -> None:
+    def test_load_default_yaml_has_twelve_jobs(self) -> None:
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
         self.assertEqual(cfg.timezone, "Asia/Manila")
-        self.assertEqual(len(cfg.jobs), 8)
+        self.assertEqual(len(cfg.jobs), 12)
         ids = {j.id for j in cfg.jobs}
         self.assertEqual(ids, set(JOB_ORDER))
 
@@ -78,7 +78,12 @@ class RunJobTests(unittest.TestCase):
         code = run_all(cfg)
         self.assertEqual(code, 0)
         called_ids = [call.args[0] for call in mock_run_job.call_args_list]
-        self.assertEqual(called_ids, list(JOB_ORDER))
+        enabled_order = [
+            job_id
+            for job_id in JOB_ORDER
+            if (spec := cfg.job_by_id(job_id)) is not None and spec.enabled
+        ]
+        self.assertEqual(called_ids, enabled_order)
 
 
 class CliParserTests(unittest.TestCase):
@@ -250,6 +255,66 @@ class CorpusValidationHookTests(unittest.TestCase):
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
         self.assertTrue(run_job("prism_yield", cfg))
         mock_validate.assert_not_called()
+
+
+class CorpusRagIndexJobTests(unittest.TestCase):
+    @patch("src.orchestrator.jobs.send_run_alert")
+    @patch("src.orchestrator.jobs.ensure_qdrant", return_value=False)
+    def test_corpus_rag_index_fails_when_qdrant_down(
+        self, _mock_ensure: mock.MagicMock, _mock_alert: mock.MagicMock
+    ) -> None:
+        cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
+        self.assertFalse(run_job("corpus_rag_index", cfg))
+
+    @patch("src.orchestrator.jobs.send_run_alert")
+    @patch("src.orchestrator.jobs.ensure_qdrant", return_value=True)
+    @patch.dict(
+        "src.orchestrator.jobs._RUNNERS",
+        {"corpus_rag_index": mock.MagicMock()},
+        clear=False,
+    )
+    def test_corpus_rag_index_runs_when_qdrant_up(
+        self, _mock_ensure: mock.MagicMock, _mock_alert: mock.MagicMock
+    ) -> None:
+        from src.indexing.corpus_rag_indexer import CorpusIndexStats, SourceIndexStats
+        from src.orchestrator import jobs
+
+        jobs._RUNNERS["corpus_rag_index"].return_value = CorpusIndexStats(
+            sources={"philrice": SourceIndexStats(read=1, indexed=1)}
+        )
+        cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
+        self.assertTrue(run_job("corpus_rag_index", cfg))
+        jobs._RUNNERS["corpus_rag_index"].assert_called_once()
+
+
+class OpenstatIndexJobTests(unittest.TestCase):
+    @patch("src.orchestrator.jobs.send_run_alert")
+    @patch("src.orchestrator.jobs.ensure_qdrant", return_value=False)
+    def test_openstat_index_fails_when_qdrant_down(
+        self, _mock_ensure: mock.MagicMock, _mock_alert: mock.MagicMock
+    ) -> None:
+        cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
+        self.assertFalse(run_job("openstat_index", cfg))
+
+    @patch("src.orchestrator.jobs.send_run_alert")
+    @patch("src.orchestrator.jobs.ensure_qdrant", return_value=True)
+    @patch.dict(
+        "src.orchestrator.jobs._RUNNERS",
+        {"openstat_index": mock.MagicMock()},
+        clear=False,
+    )
+    def test_openstat_index_runs_when_qdrant_up(
+        self, _mock_ensure: mock.MagicMock, _mock_alert: mock.MagicMock
+    ) -> None:
+        from src.indexing.price_indexer import PriceIndexStats
+        from src.orchestrator import jobs
+
+        jobs._RUNNERS["openstat_index"].return_value = PriceIndexStats(
+            rows_seen=10, records_upserted=10, knowledge_upserted=10
+        )
+        cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
+        self.assertTrue(run_job("openstat_index", cfg))
+        jobs._RUNNERS["openstat_index"].assert_called_once()
 
 
 class PrismIndexJobTests(unittest.TestCase):

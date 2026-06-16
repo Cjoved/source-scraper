@@ -109,8 +109,8 @@ class RunValidationTests(unittest.TestCase):
         if reports[0].status == "skipped":
             self.assertEqual(code, 0)
 
-    def test_openstat_min_text_chars_spec(self) -> None:
-        spec = SOURCE_BY_ID["openstat"]
+    def test_openstat_lines_min_text_chars_spec(self) -> None:
+        spec = SOURCE_BY_ID["openstat_lines"]
         self.assertEqual(spec.min_text_chars, 80)
         # Typical OpenSTAT CPT lines are ~90–110 chars; global default 100 was too strict.
         borderline = "x" * 95
@@ -125,7 +125,7 @@ class RunValidationTests(unittest.TestCase):
             }
             p.write_text(json.dumps(rec) + "\n", encoding="utf-8")
             rep = validate_jsonl_file(
-                p, source_id="openstat", check_quality=True, min_text_chars=80
+                p, source_id="openstat_lines", check_quality=True, min_text_chars=80
             )
             self.assertEqual(rep.status, "ok")
 
