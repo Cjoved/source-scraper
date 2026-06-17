@@ -83,6 +83,7 @@ def backup_job_artifacts(
     job_id: str,
     *,
     log: LogFn | None = None,
+    require_any_upload: bool = True,
 ) -> list[dict[str, str]]:
     """
     Rotate latest->backup and upload local artifacts for one orchestrator job.
@@ -123,11 +124,17 @@ def backup_job_artifacts(
             )
             uploaded.append(result)
             tier = "corpus-data" if spec.kind == "corpus" else "Checkpoint"
+            dated = result.get("dated", "")
+            snap = result.get("snapshot_date", "")
             log(f"  [green]OK[/green] {spec.remote_filename} -> {tier}/latest/")
+            if dated and snap:
+                log(f"       [dim]dated snapshot: {tier}/history/{snap}/[/dim]")
         except WasabiUploadError as exc:
             raise WasabiUploadError(f"{job_id}/{spec.remote_filename}: {exc}") from exc
 
-    if not uploaded:
+    if not uploaded and require_any_upload:
         raise WasabiUploadError(f"No artifacts uploaded for job '{job_id}' (all local files missing).")
+    if not uploaded:
+        log(f"[yellow]No local artifacts found for {job_id}; skipped.[/yellow]")
 
     return uploaded

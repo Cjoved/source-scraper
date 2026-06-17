@@ -29,6 +29,8 @@ api = [
 dev = [
     "ruff>=0.6",
     "mypy>=1.11",
+    "qdrant-client[fastembed]>=1.14",
+    "pydantic-settings>=2.4",
 ]
 orchestrator = [
     "pyyaml>=6.0",
@@ -36,6 +38,8 @@ orchestrator = [
     "apscheduler>=3.10",
     "structlog>=24.1",
     "boto3>=1.35",
+    "qdrant-client>=1.14",
+    "pydantic-settings>=2.4",
 ]
 openstat = [
     "playwright>=1.54",
@@ -64,3 +68,9 @@ python_version = "3.12"
 strict = true
 warn_unused_ignores = true
 warn_redundant_casts = true
+
+[tool.basedpyright]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+reportMissingImports = "warning"

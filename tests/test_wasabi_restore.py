@@ -31,6 +31,16 @@ class WasabiRestoreTests(unittest.TestCase):
             self.assertTrue((Path(tmp) / "irri_processed" / "irri_corpus.jsonl").is_file())
             self.assertTrue((Path(tmp) / "checkpoints" / "irri_checkpoint.json").is_file())
 
+    @mock.patch.object(restore, "list_dated_snapshots")
+    @mock.patch.object(restore, "wasabi_enabled", return_value=True)
+    def test_list_job_snapshot_dates_unions_artifacts(self, _enabled: mock.MagicMock, mock_list: mock.MagicMock) -> None:
+        mock_list.side_effect = [
+            ["2026-06-16", "2026-06-09"],
+            ["2026-06-16"],
+        ]
+        dates = restore.list_job_snapshot_dates("irri")
+        self.assertEqual(dates, ["2026-06-16", "2026-06-09"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -32,16 +32,24 @@ class WasabiStoreTests(unittest.TestCase):
                 object_key("checkpoint", "backup", "irri_checkpoint.json"),
                 "Checkpoint/backup/irri_checkpoint.json",
             )
+            self.assertEqual(
+                object_key("corpus", "dated", "irri_corpus.jsonl", snapshot_date="2026-06-16"),
+                "corpus-data/history/2026-06-16/irri_corpus.jsonl",
+            )
+            self.assertEqual(
+                object_key("qdrant", "latest", "agri_corpus_rag.snapshot"),
+                "qdrant-data/latest/agri_corpus_rag.snapshot",
+            )
 
-    def test_rotate_and_upload_copies_then_uploads(self) -> None:
+    def test_rotate_and_upload_copies_uploads_and_dated_snapshot(self) -> None:
         client = mock.MagicMock()
         client.exceptions = mock.MagicMock()
-        head_side_effects = [mock.MagicMock()]  # exists
 
         def head_object(**_kwargs: object) -> None:
             return None
 
         client.head_object.side_effect = head_object
+        client.get_paginator.return_value.paginate.return_value = [{"Contents": []}]
 
         with tempfile.TemporaryDirectory() as tmp:
             local = Path(tmp) / "irri_corpus.jsonl"
@@ -51,18 +59,46 @@ class WasabiStoreTests(unittest.TestCase):
                 {
                     "WASABI_ACCESS_KEY": "key",
                     "WASABI_SECRET_KEY": "secret",
+                    "WASABI_DATED_RETENTION": "2",
                 },
                 clear=False,
-            ):
+            ), mock.patch("src.storage.wasabi_store._object_exists", return_value=True):
                 result = rotate_and_upload(
                     local,
                     kind="corpus",
                     remote_filename="irri_corpus.jsonl",
                     client=client,
+                    snapshot_date="2026-06-16",
                 )
             client.copy_object.assert_called_once()
-            client.upload_file.assert_called_once()
+            self.assertEqual(client.upload_file.call_count, 2)
             self.assertIn("corpus-data/latest/irri_corpus.jsonl", result["latest"])
+            self.assertIn("corpus-data/history/2026-06-16/irri_corpus.jsonl", result["dated"])
+            self.assertEqual(result["snapshot_date"], "2026-06-16")
+
+    def test_prune_dated_history_keeps_two(self) -> None:
+        from src.storage.wasabi_store import _prune_dated_history
+
+        client = mock.MagicMock()
+        client.get_paginator.return_value.paginate.return_value = [
+            {
+                "Contents": [
+                    {"Key": "corpus-data/history/2026-06-01/irri_corpus.jsonl"},
+                    {"Key": "corpus-data/history/2026-06-08/irri_corpus.jsonl"},
+                    {"Key": "corpus-data/history/2026-06-15/irri_corpus.jsonl"},
+                ]
+            }
+        ]
+        with mock.patch.dict(
+            "os.environ",
+            {"WASABI_ACCESS_KEY": "key", "WASABI_SECRET_KEY": "secret", "WASABI_DATED_RETENTION": "2"},
+            clear=False,
+        ):
+            deleted = _prune_dated_history(
+                client, "agent-scraper", "corpus", "irri_corpus.jsonl", retention=2
+            )
+        self.assertEqual(deleted, ["corpus-data/history/2026-06-01/irri_corpus.jsonl"])
+        client.delete_object.assert_called_once()
 
     def test_wasabi_disabled_without_credentials(self) -> None:
         with mock.patch.dict("os.environ", {"WASABI_ENABLED": "false"}, clear=False):

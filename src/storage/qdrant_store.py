@@ -25,6 +25,7 @@ from typing import Any, Protocol
 from src.api.errors import ApiError, ErrorCode
 from src.api.schemas import SemesterCode
 from src.api.settings import Settings
+from src.storage import qdrant_imports as qc
 
 
 @dataclass(frozen=True)
@@ -220,22 +221,13 @@ class QdrantStoreProtocol(Protocol):
 class QdrantStore:
     """Concrete Qdrant-backed implementation of :class:`QdrantStoreProtocol`.
 
-    Imports of ``qdrant_client`` happen lazily so the project remains usable
-    (e.g., scraper-only mode) without the ``api`` extras installed.
+    Imports of ``qdrant_client`` are centralized in :mod:`src.storage.qdrant_imports`
+    so scraper-only mode works without the ``api`` extra installed.
     """
 
     def __init__(self, settings: Settings) -> None:
-        from qdrant_client import QdrantClient
-
         self._settings = settings
-        self._client = QdrantClient(
-            url=settings.qdrant_url,
-            api_key=settings.qdrant_api_key,
-            timeout=settings.qdrant_timeout_seconds,
-            local_inference_batch_size=settings.qdrant_local_inference_batch_size,
-        )
-        self._client.set_model(settings.embedding_dense_model)
-        self._client.set_sparse_model(settings.embedding_sparse_model)
+        self._client = qc.create_store_client(settings)
 
     @property
     def records_name(self) -> str:
@@ -278,18 +270,14 @@ class QdrantStore:
         return [c.name for c in response.collections]
 
     def ensure_collections(self) -> None:
-        from qdrant_client.models import (
-            Distance,
-            PayloadSchemaType,
-            VectorParams,
-        )
+        models = qc.models()
 
         existing = set(self.list_collection_names())
 
         if self.records_name not in existing:
             self._client.create_collection(
                 collection_name=self.records_name,
-                vectors_config=VectorParams(size=1, distance=Distance.COSINE),
+                vectors_config=models.VectorParams(size=1, distance=models.Distance.COSINE),
             )
         self._create_payload_indexes(self.records_name)
 
@@ -306,21 +294,15 @@ class QdrantStore:
             _ = (dense_name, sparse_name)
         self._create_payload_indexes(self.knowledge_name)
 
-        del PayloadSchemaType
-
     def ensure_price_collections(self) -> None:
-        from qdrant_client.models import (
-            Distance,
-            PayloadSchemaType,
-            VectorParams,
-        )
+        models = qc.models()
 
         existing = set(self.list_collection_names())
 
         if self.price_records_name not in existing:
             self._client.create_collection(
                 collection_name=self.price_records_name,
-                vectors_config=VectorParams(size=1, distance=Distance.COSINE),
+                vectors_config=models.VectorParams(size=1, distance=models.Distance.COSINE),
             )
         self._create_price_payload_indexes(self.price_records_name)
 
@@ -334,11 +316,7 @@ class QdrantStore:
             )
         self._create_price_payload_indexes(self.price_knowledge_name)
 
-        del PayloadSchemaType
-
     def ensure_corpus_collection(self, *, recreate: bool = False) -> None:
-        from qdrant_client.models import PayloadSchemaType
-
         if recreate and self.corpus_name in self.list_collection_names():
             self._client.delete_collection(collection_name=self.corpus_name)
 
@@ -352,14 +330,13 @@ class QdrantStore:
                 sparse_vectors_config=sparse_config,
             )
         self._create_corpus_payload_indexes(self.corpus_name)
-        del PayloadSchemaType
 
     def _create_corpus_payload_indexes(self, collection: str) -> None:
-        from qdrant_client.models import PayloadSchemaType
+        models = qc.models()
 
-        fields: dict[str, PayloadSchemaType] = {
-            "source_id": PayloadSchemaType.KEYWORD,
-            "doc_id": PayloadSchemaType.KEYWORD,
+        fields: dict[str, Any] = {
+            "source_id": models.PayloadSchemaType.KEYWORD,
+            "doc_id": models.PayloadSchemaType.KEYWORD,
         }
         for field_name, schema_type in fields.items():
             try:
@@ -372,15 +349,15 @@ class QdrantStore:
                 continue
 
     def _create_price_payload_indexes(self, collection: str) -> None:
-        from qdrant_client.models import PayloadSchemaType
+        models = qc.models()
 
-        fields: dict[str, PayloadSchemaType] = {
-            "year": PayloadSchemaType.INTEGER,
-            "month": PayloadSchemaType.KEYWORD,
-            "geolocation": PayloadSchemaType.KEYWORD,
-            "commodity": PayloadSchemaType.KEYWORD,
-            "commodity_type": PayloadSchemaType.KEYWORD,
-            "price_php_per_kg": PayloadSchemaType.FLOAT,
+        fields: dict[str, Any] = {
+            "year": models.PayloadSchemaType.INTEGER,
+            "month": models.PayloadSchemaType.KEYWORD,
+            "geolocation": models.PayloadSchemaType.KEYWORD,
+            "commodity": models.PayloadSchemaType.KEYWORD,
+            "commodity_type": models.PayloadSchemaType.KEYWORD,
+            "price_php_per_kg": models.PayloadSchemaType.FLOAT,
         }
         for field_name, schema_type in fields.items():
             try:
@@ -393,15 +370,15 @@ class QdrantStore:
                 continue
 
     def _create_payload_indexes(self, collection: str) -> None:
-        from qdrant_client.models import PayloadSchemaType
+        models = qc.models()
 
-        fields: dict[str, PayloadSchemaType] = {
-            "year": PayloadSchemaType.INTEGER,
-            "semester_code": PayloadSchemaType.INTEGER,
-            "region": PayloadSchemaType.KEYWORD,
-            "province": PayloadSchemaType.KEYWORD,
-            "municipality": PayloadSchemaType.KEYWORD,
-            "avg_yield_ton_ha": PayloadSchemaType.FLOAT,
+        fields: dict[str, Any] = {
+            "year": models.PayloadSchemaType.INTEGER,
+            "semester_code": models.PayloadSchemaType.INTEGER,
+            "region": models.PayloadSchemaType.KEYWORD,
+            "province": models.PayloadSchemaType.KEYWORD,
+            "municipality": models.PayloadSchemaType.KEYWORD,
+            "avg_yield_ton_ha": models.PayloadSchemaType.FLOAT,
         }
         for field_name, schema_type in fields.items():
             try:
@@ -414,7 +391,11 @@ class QdrantStore:
                 continue
 
     def _build_qdrant_filter(self, flt: YieldFilter) -> Any | None:
-        from qdrant_client.models import FieldCondition, Filter, MatchValue, Range
+        models = qc.models()
+        FieldCondition = models.FieldCondition
+        Filter = models.Filter
+        MatchValue = models.MatchValue
+        Range = models.Range
 
         must: list[Any] = []
 
@@ -444,7 +425,11 @@ class QdrantStore:
         return Filter(must=must)
 
     def _build_price_filter(self, flt: PriceFilter) -> Any | None:
-        from qdrant_client.models import FieldCondition, Filter, MatchValue, Range
+        models = qc.models()
+        FieldCondition = models.FieldCondition
+        Filter = models.Filter
+        MatchValue = models.MatchValue
+        Range = models.Range
 
         must: list[Any] = []
 
@@ -474,13 +459,16 @@ class QdrantStore:
         return Filter(must=must)
 
     def _build_corpus_filter(self, flt: CorpusFilter) -> Any | None:
-        from qdrant_client.models import FieldCondition, Filter, MatchAny
+        models = qc.models()
 
         if not flt.source_ids:
             return None
-        return Filter(
+        return models.Filter(
             must=[
-                FieldCondition(key="source_id", match=MatchAny(any=list(flt.source_ids))),
+                models.FieldCondition(
+                    key="source_id",
+                    match=models.MatchAny(any=list(flt.source_ids)),
+                ),
             ]
         )
 
@@ -561,7 +549,7 @@ class QdrantStore:
         wrapped in ``models.Document`` so qdrant-client performs FastEmbed
         inference server-side via the modern ``query_points`` API.
         """
-        from qdrant_client import models
+        models = qc.models()
 
         dense_name = self._client.get_vector_field_name()
         sparse_name = self._client.get_sparse_vector_field_name()
@@ -691,7 +679,7 @@ class QdrantStore:
         min_score: float,
     ) -> list[KnowledgeHitRecord]:
         """Hybrid retrieval over the OpenSTAT price knowledge collection."""
-        from qdrant_client import models
+        models = qc.models()
 
         dense_name = self._client.get_vector_field_name()
         sparse_name = self._client.get_sparse_vector_field_name()
@@ -758,7 +746,7 @@ class QdrantStore:
         min_score: float,
     ) -> list[KnowledgeHitRecord]:
         """Hybrid retrieval over the unified RAG corpus collection."""
-        from qdrant_client import models
+        models = qc.models()
 
         dense_name = self._client.get_vector_field_name()
         sparse_name = self._client.get_sparse_vector_field_name()
@@ -818,10 +806,10 @@ class QdrantStore:
         return hits
 
     def upsert_yield_records(self, points: Iterable[StructuredPoint]) -> int:
-        from qdrant_client.models import PointStruct
+        models = qc.models()
 
         batch = [
-            PointStruct(id=p.point_id, vector=_DUMMY_VECTOR, payload=p.payload)
+            models.PointStruct(id=p.point_id, vector=_DUMMY_VECTOR, payload=p.payload)
             for p in points
         ]
         if not batch:
@@ -833,10 +821,10 @@ class QdrantStore:
         return len(batch)
 
     def upsert_price_records(self, points: Iterable[StructuredPoint]) -> int:
-        from qdrant_client.models import PointStruct
+        models = qc.models()
 
         batch = [
-            PointStruct(id=p.point_id, vector=_DUMMY_VECTOR, payload=p.payload)
+            models.PointStruct(id=p.point_id, vector=_DUMMY_VECTOR, payload=p.payload)
             for p in points
         ]
         if not batch:
@@ -863,7 +851,7 @@ class QdrantStore:
         materialized: list[KnowledgePoint] | list[CorpusPoint],
     ) -> list[Any]:
         """Build PointStructs with Document vectors for local FastEmbed inference."""
-        from qdrant_client import models
+        models = qc.models()
 
         dense_name = self._client.get_vector_field_name()
         sparse_name = self._client.get_sparse_vector_field_name()

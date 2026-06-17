@@ -74,7 +74,7 @@
 ## Operational Rules
 - PhilRice default pipeline: `PHILRICE_STREAM_PROCESS=true` — download → process → append `philrice_corpus.jsonl` → delete PDF (`PHILRICE_DELETE_PDF_AFTER_CLEAN`, default on in stream mode). Batch mode: set `PHILRICE_STREAM_PROCESS=false`.
 - PhilRice News, PinoyRice, IRRI: same stream pattern (`PHILRICE_NEWS_STREAM_PROCESS`, `PINOYRICE_STREAM_PROCESS`, `IRRI_STREAM_PROCESS`). Use `*_FRESH_CORPUS=true` once when resetting checkpoint/corpus; see `docs/SCHEDULER_SETUP.md`.
-- Wasabi: per-job upload after successful runs; restore with `uv run python -m src.storage.wasabi_restore --job <id>` or `--all`.
+- Wasabi: per-job upload after successful runs; Qdrant snapshots after index jobs; restore with `uv run python -m src.storage.wasabi_restore` (`--list-dates`, `--reindex`, `--qdrant`).
 - Prefer checkpoint-safe updates; avoid breaking resume behavior.
 - Do not commit runtime artifacts from `data/` except tracked `.gitkeep` files.
 - Keep `.env` examples mode-specific; avoid mixing conflicting job settings.

@@ -18,18 +18,31 @@ def run_corpus_release() -> None:
 
 
 def run_corpus_backup_wasabi() -> None:
-    """Legacy monthly job — per-job backup runs after each scrape job (see wasabi_backup.py)."""
+    """Monthly full sync: all corpus/checkpoint artifacts + Qdrant collection snapshots."""
     from src.orchestrator.wasabi_backup import JOB_WASABI_ARTIFACTS, backup_job_artifacts
-    from src.storage.wasabi_store import wasabi_enabled
+    from src.storage.qdrant_wasabi_backup import backup_qdrant_collections
+    from src.storage.wasabi_store import WasabiUploadError, wasabi_enabled
 
     if not wasabi_enabled():
-        console.print("[yellow]Wasabi not configured — set WASABI_ACCESS_KEY and WASABI_SECRET_KEY.[/yellow]")
-        return
+        raise WasabiUploadError(
+            "Wasabi not configured — set WASABI_ACCESS_KEY and WASABI_SECRET_KEY."
+        )
 
-    console.rule("[bold cyan]Wasabi full sync (all mapped jobs)[/bold cyan]")
+    failures: list[str] = []
+    console.rule("[bold cyan]Wasabi full sync (corpus + checkpoints)[/bold cyan]")
     for job_id in JOB_WASABI_ARTIFACTS:
         try:
-            backup_job_artifacts(job_id, log=console.print)
-        except Exception as exc:
-            console.print(f"[yellow]{job_id}: {exc}[/yellow]")
-    console.rule("[bold green]Done[/bold green]")
+            backup_job_artifacts(job_id, log=console.print, require_any_upload=False)
+        except WasabiUploadError as exc:
+            failures.append(f"{job_id}: {exc}")
+
+    console.rule("[bold cyan]Wasabi full sync (Qdrant snapshots)[/bold cyan]")
+    try:
+        backup_qdrant_collections(log=console.print, require_any=False)
+    except WasabiUploadError as exc:
+        failures.append(f"qdrant: {exc}")
+
+    if failures:
+        raise WasabiUploadError("Wasabi full sync failed:\n" + "\n".join(failures))
+
+    console.rule("[bold green]Wasabi full sync complete[/bold green]")

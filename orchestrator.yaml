@@ -128,7 +128,7 @@ jobs:
     timeout_minutes: 180
     env_overrides: {}
 
-  # Phase 5 — production delivery (disabled until P5.1–P5.4 implemented)
+  # Phase 5 — Wasabi full sync (corpus + checkpoints + Qdrant snapshots)
   - id: corpus_release
     enabled: false
     cron: "0 8 1-7 * 1"
@@ -137,7 +137,7 @@ jobs:
     env_overrides: {}
 
   - id: corpus_backup_wasabi
-    enabled: false
+    enabled: true
     cron: "0 9 1-7 * 1"
     browser_heavy: false
     timeout_minutes: 120

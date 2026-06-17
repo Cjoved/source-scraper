@@ -59,7 +59,7 @@ JOB_ORDER: tuple[str, ...] = (
     "corpus_backup_wasabi",
 )
 
-_RUNNERS: dict[str, Callable[[], None]] = {
+_RUNNERS: dict[str, Callable[[], object]] = {
     "philrice": run_philrice,
     "philrice_news": run_philrice_news,
     "pinoyrice": run_pinoyrice,
@@ -196,11 +196,16 @@ def run_job(job_id: str, config: OrchestratorConfig | None = None) -> bool:
                 ctx.write_skipped_validation_report("no_corpus_mapping")
 
             from src.orchestrator.wasabi_backup import JOB_WASABI_ARTIFACTS, backup_job_artifacts
+            from src.storage.qdrant_wasabi_backup import (
+                backup_qdrant_collections,
+                should_backup_qdrant_after_job,
+            )
             from src.storage.wasabi_store import WasabiUploadError, backup_fail_job, wasabi_enabled
 
+            wasabi_uploads: list[dict[str, str]] = []
             if wasabi_enabled() and job_id in JOB_WASABI_ARTIFACTS:
                 try:
-                    ctx.set_wasabi_backup(backup_job_artifacts(job_id, log=console.print))
+                    wasabi_uploads.extend(backup_job_artifacts(job_id, log=console.print))
                 except WasabiUploadError as exc:
                     msg = f"Wasabi backup failed after {job_id}: {exc}"
                     console.print(f"[red]{msg}[/red]")
@@ -210,6 +215,28 @@ def run_job(job_id: str, config: OrchestratorConfig | None = None) -> bool:
                         send_run_alert(ctx)
                         return False
                     ctx.add_warning(msg)
+
+            if wasabi_enabled() and should_backup_qdrant_after_job(job_id):
+                try:
+                    require_any = job_id in ("corpus_rag_index", "prism_index", "openstat_index")
+                    wasabi_uploads.extend(
+                        backup_qdrant_collections(
+                            log=console.print,
+                            require_any=require_any,
+                        )
+                    )
+                except WasabiUploadError as exc:
+                    msg = f"Qdrant Wasabi backup failed after {job_id}: {exc}"
+                    console.print(f"[red]{msg}[/red]")
+                    log.error("wasabi.qdrant_backup_failed", error=str(exc))
+                    if backup_fail_job():
+                        ctx.mark_failed(message=msg, error_type="WasabiBackupError")
+                        send_run_alert(ctx)
+                        return False
+                    ctx.add_warning(msg)
+
+            if wasabi_uploads:
+                ctx.set_wasabi_backup(wasabi_uploads)
 
             ctx.mark_ok()
             success = True

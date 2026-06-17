@@ -2517,6 +2517,8 @@ browser = [
 ]
 dev = [
     { name = "mypy" },
+    { name = "pydantic-settings" },
+    { name = "qdrant-client", extra = ["fastembed"] },
     { name = "ruff" },
 ]
 openstat = [
@@ -2533,7 +2535,9 @@ orchestrator = [
     { name = "apscheduler" },
     { name = "boto3" },
     { name = "croniter" },
+    { name = "pydantic-settings" },
     { name = "pyyaml" },
+    { name = "qdrant-client" },
     { name = "structlog" },
 ]
 
@@ -2554,10 +2558,14 @@ requires-dist = [
     { name = "playwright-stealth", marker = "extra == 'openstat'", specifier = ">=1.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pydantic-settings", marker = "extra == 'api'", specifier = ">=2.4" },
+    { name = "pydantic-settings", marker = "extra == 'dev'", specifier = ">=2.4" },
+    { name = "pydantic-settings", marker = "extra == 'orchestrator'", specifier = ">=2.4" },
     { name = "pymupdf", marker = "extra == 'openstat'", specifier = ">=1.24" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", marker = "extra == 'orchestrator'", specifier = ">=6.0" },
+    { name = "qdrant-client", marker = "extra == 'orchestrator'", specifier = ">=1.14" },
     { name = "qdrant-client", extras = ["fastembed"], marker = "extra == 'api'", specifier = ">=1.14" },
+    { name = "qdrant-client", extras = ["fastembed"], marker = "extra == 'dev'", specifier = ">=1.14" },
     { name = "requests", specifier = ">=2.31" },
     { name = "rich", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },

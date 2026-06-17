@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import os
+import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-ArtifactKind = Literal["corpus", "checkpoint"]
+ArtifactKind = Literal["corpus", "checkpoint", "qdrant"]
+ObjectTier = Literal["latest", "backup", "dated"]
+
+_HISTORY_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class WasabiConfigError(RuntimeError):
@@ -49,6 +54,7 @@ def wasabi_settings() -> dict[str, str]:
         ).strip(),
         "corpus_prefix": _normalize_prefix(os.getenv("WASABI_CORPUS_PREFIX", "corpus-data/")),
         "checkpoint_prefix": _normalize_prefix(os.getenv("WASABI_CHECKPOINT_PREFIX", "Checkpoint/")),
+        "qdrant_prefix": _normalize_prefix(os.getenv("WASABI_QDRANT_PREFIX", "qdrant-data/")),
     }
 
 
@@ -59,10 +65,39 @@ def _normalize_prefix(prefix: str) -> str:
     return prefix
 
 
-def object_key(kind: ArtifactKind, tier: Literal["latest", "backup"], filename: str) -> str:
+def dated_retention_count() -> int:
+    """How many date-stamped history copies to keep per file (default 2)."""
+    raw = os.getenv("WASABI_DATED_RETENTION", "2").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 2
+    return max(1, value)
+
+
+def _prefix_for_kind(kind: ArtifactKind) -> str:
     settings = wasabi_settings()
-    base = settings["corpus_prefix"] if kind == "corpus" else settings["checkpoint_prefix"]
+    if kind == "corpus":
+        return settings["corpus_prefix"]
+    if kind == "checkpoint":
+        return settings["checkpoint_prefix"]
+    return settings["qdrant_prefix"]
+
+
+def object_key(
+    kind: ArtifactKind,
+    tier: ObjectTier,
+    filename: str,
+    *,
+    snapshot_date: str | None = None,
+) -> str:
+    """S3 key for latest, backup, or dated history (``history/YYYY-MM-DD/``)."""
+    base = _prefix_for_kind(kind)
     name = filename.lstrip("/")
+    if tier == "dated":
+        if not snapshot_date or not _HISTORY_DATE_RE.match(snapshot_date):
+            raise WasabiUploadError(f"Invalid snapshot date (use YYYY-MM-DD): {snapshot_date!r}")
+        return f"{base}history/{snapshot_date}/{name}"
     return f"{base}{tier}/{name}"
 
 
@@ -99,15 +134,64 @@ def _object_exists(client: Any, bucket: str, key: str) -> bool:
         raise WasabiUploadError(f"head_object failed for s3://{bucket}/{key}: {exc}") from exc
 
 
+def _list_dated_history_keys(
+    client: Any,
+    bucket: str,
+    kind: ArtifactKind,
+    remote_filename: str,
+) -> list[tuple[str, str]]:
+    """Return (YYYY-MM-DD, s3_key) for history copies of *remote_filename*, newest first."""
+    base = _prefix_for_kind(kind)
+    prefix = f"{base}history/"
+    name = remote_filename.lstrip("/")
+    matches: list[tuple[str, str]] = []
+
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key = str(obj["Key"])
+            suffix = key[len(prefix) :]
+            if "/" not in suffix:
+                continue
+            date_part, fname = suffix.split("/", 1)
+            if fname != name or not _HISTORY_DATE_RE.match(date_part):
+                continue
+            matches.append((date_part, key))
+
+    matches.sort(key=lambda item: item[0], reverse=True)
+    return matches
+
+
+def _prune_dated_history(
+    client: Any,
+    bucket: str,
+    kind: ArtifactKind,
+    remote_filename: str,
+    *,
+    retention: int | None = None,
+) -> list[str]:
+    """Delete oldest dated history objects beyond *retention* count."""
+    keep = retention if retention is not None else dated_retention_count()
+    dated_keys = _list_dated_history_keys(client, bucket, kind, remote_filename)
+    deleted: list[str] = []
+    for _date, key in dated_keys[keep:]:
+        client.delete_object(Bucket=bucket, Key=key)
+        deleted.append(key)
+    return deleted
+
+
 def rotate_and_upload(
     local_path: Path,
     *,
     kind: ArtifactKind,
     remote_filename: str,
     client: Any | None = None,
+    snapshot_date: str | None = None,
 ) -> dict[str, str]:
     """
-    Copy existing latest object to backup (if present), then upload local file to latest.
+    Copy existing latest object to backup (if present), upload to latest, and
+    add a dated copy under ``history/YYYY-MM-DD/``. Prunes old dated copies
+    beyond ``WASABI_DATED_RETENTION`` (default 2).
 
     Returns S3 keys touched.
     """
@@ -117,9 +201,11 @@ def rotate_and_upload(
     settings = wasabi_settings()
     bucket = settings["bucket"]
     s3 = client or get_s3_client()
+    date_str = snapshot_date or datetime.now(UTC).strftime("%Y-%m-%d")
 
     latest = object_key(kind, "latest", remote_filename)
     backup = object_key(kind, "backup", remote_filename)
+    dated = object_key(kind, "dated", remote_filename, snapshot_date=date_str)
 
     if _object_exists(s3, bucket, latest):
         s3.copy_object(
@@ -129,11 +215,16 @@ def rotate_and_upload(
         )
 
     s3.upload_file(str(local_path), bucket, latest)
+    s3.upload_file(str(local_path), bucket, dated)
+    pruned = _prune_dated_history(s3, bucket, kind, remote_filename)
 
     return {
         "local": str(local_path),
         "latest": f"s3://{bucket}/{latest}",
         "backup": f"s3://{bucket}/{backup}",
+        "dated": f"s3://{bucket}/{dated}",
+        "snapshot_date": date_str,
+        "pruned_dated_keys": ",".join(pruned),
         "kind": kind,
         "remote_filename": remote_filename,
     }
@@ -144,14 +235,15 @@ def download_latest(
     *,
     kind: ArtifactKind,
     remote_filename: str,
-    tier: Literal["latest", "backup"] = "latest",
+    tier: ObjectTier = "latest",
+    snapshot_date: str | None = None,
     client: Any | None = None,
 ) -> dict[str, str]:
-    """Download one object from Wasabi latest or backup tier into local_path."""
+    """Download one object from Wasabi latest, backup, or dated history tier."""
     settings = wasabi_settings()
     bucket = settings["bucket"]
     s3 = client or get_s3_client()
-    key = object_key(kind, tier, remote_filename)
+    key = object_key(kind, tier, remote_filename, snapshot_date=snapshot_date)
     local_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         s3.download_file(bucket, key, str(local_path))
@@ -169,4 +261,17 @@ def download_latest(
         "kind": kind,
         "remote_filename": remote_filename,
         "tier": tier,
+        "snapshot_date": snapshot_date or "",
     }
+
+
+def list_dated_snapshots(
+    kind: ArtifactKind,
+    remote_filename: str,
+    *,
+    client: Any | None = None,
+) -> list[str]:
+    """List available YYYY-MM-DD history dates for one remote file (newest first)."""
+    settings = wasabi_settings()
+    s3 = client or get_s3_client()
+    return [date for date, _key in _list_dated_history_keys(s3, settings["bucket"], kind, remote_filename)]
