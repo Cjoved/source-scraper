@@ -16,8 +16,8 @@ from src.scripts.validate_corpus import FileReport
 
 
 class CorpusValidationTests(unittest.TestCase):
-    def test_pinoyrice_includes_pdfs_source(self) -> None:
-        self.assertIn("pinoyrice_pdfs", JOB_CORPUS_SOURCES["pinoyrice"])
+    def test_pinoyrice_corpus_source(self) -> None:
+        self.assertEqual(JOB_CORPUS_SOURCES["pinoyrice"], ("pinoyrice",))
 
     @patch.dict("os.environ", {"ORCHESTRATOR_VALIDATE_QUALITY": "false"}, clear=False)
     def test_quality_toggle_off(self) -> None:

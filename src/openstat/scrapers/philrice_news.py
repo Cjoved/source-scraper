@@ -214,16 +214,22 @@ def _page_is_not_found(page) -> bool:
     return False
 
 
-def _load_checkpoint_state() -> tuple[list[str], dict[str, str], set[str]]:
-    """
-    Load checkpoint and verify each URL still has its .txt on disk.
+def _stream_mode() -> bool:
+    from src.openstat.services import philrice_news as processing
 
-    Legacy checkpoints (scraped_urls only, no url_to_file) are not trusted —
-    they caused false "Done" when URLs were marked scraped but files were missing.
+    return processing.stream_process_enabled()
+
+
+def _load_checkpoint_state() -> tuple[list[str], dict[str, str], set[str], dict[str, str]]:
+    """
+    Load checkpoint and verify each URL still has its .txt on disk (batch mode).
+
+    Stream mode trusts url_to_file without requiring .txt on disk.
+    Legacy checkpoints (scraped_urls only, no url_to_file) are not trusted.
     """
     data = load_checkpoint(
         CHECKPOINT_PATH,
-        default={"scraped_urls": [], "url_to_file": {}, "dead_urls": []},
+        default={"scraped_urls": [], "url_to_file": {}, "url_to_title": {}, "dead_urls": []},
     )
     dead_raw = data.get("dead_urls") or []
     dead_urls = {str(u) for u in dead_raw} if isinstance(dead_raw, list) else set()
@@ -231,6 +237,12 @@ def _load_checkpoint_state() -> tuple[list[str], dict[str, str], set[str]]:
     url_to_file = (
         {str(k): str(v) for k, v in url_to_file_raw.items()}
         if isinstance(url_to_file_raw, dict)
+        else {}
+    )
+    url_to_title_raw = data.get("url_to_title") or {}
+    url_to_title = (
+        {str(k): str(v) for k, v in url_to_title_raw.items()}
+        if isinstance(url_to_title_raw, dict)
         else {}
     )
     legacy_urls = data.get("scraped_urls") or []
@@ -242,7 +254,11 @@ def _load_checkpoint_state() -> tuple[list[str], dict[str, str], set[str]]:
             f"[yellow]Legacy checkpoint ({len(legacy_urls)} URLs) has no file map — "
             f"only {txt_count} .txt on disk. Ignoring stale URL list; will re-fetch missing articles.[/yellow]"
         )
-        return [], {}, dead_urls
+        return [], {}, dead_urls, {}
+
+    if _stream_mode() and url_to_file:
+        verified_urls = sorted(url_to_file.keys())
+        return verified_urls, dict(url_to_file), dead_urls, dict(url_to_title)
 
     verified_urls: list[str] = []
     verified_map: dict[str, str] = {}
@@ -259,22 +275,25 @@ def _load_checkpoint_state() -> tuple[list[str], dict[str, str], set[str]]:
             f"[yellow]Checkpoint repair: {missing_files} URL(s) had no .txt — "
             f"will re-fetch on this run.[/yellow]"
         )
-        _save_checkpoint_state(verified_urls, verified_map, dead_urls)
+        _save_checkpoint_state(verified_urls, verified_map, dead_urls, url_to_title)
 
-    return verified_urls, verified_map, dead_urls
+    return verified_urls, verified_map, dead_urls, url_to_title
 
 
 def _save_checkpoint_state(
     scraped_urls: list[str],
     url_to_file: dict[str, str],
     dead_urls: set[str] | list[str] | None = None,
+    url_to_title: dict[str, str] | None = None,
 ) -> None:
     dead_list = sorted(set(dead_urls or []))
+    title_map = url_to_title or {}
     save_checkpoint(
         CHECKPOINT_PATH,
         {
             "scraped_urls": sorted(set(scraped_urls)),
             "url_to_file": {u: url_to_file[u] for u in scraped_urls if u in url_to_file},
+            "url_to_title": {u: title_map[u] for u in scraped_urls if u in title_map},
             "dead_urls": dead_list,
         },
     )
@@ -303,7 +322,7 @@ def _write_scrape_status(status: PhilRiceNewsScrapeStatus) -> None:
 
 
 def _load_scraped_urls() -> list[str]:
-    urls, _, _ = _load_checkpoint_state()
+    urls, _, _, _ = _load_checkpoint_state()
     return urls
 
 
@@ -311,14 +330,17 @@ def _save_checkpoint(
     scraped_urls: list[str],
     url_to_file: dict[str, str] | None = None,
     dead_urls: set[str] | None = None,
+    url_to_title: dict[str, str] | None = None,
 ) -> None:
-    if url_to_file is None or dead_urls is None:
-        _, url_to_file_loaded, dead_loaded = _load_checkpoint_state()
+    if url_to_file is None or dead_urls is None or url_to_title is None:
+        _, url_to_file_loaded, dead_loaded, title_loaded = _load_checkpoint_state()
         if url_to_file is None:
             url_to_file = url_to_file_loaded
         if dead_urls is None:
             dead_urls = dead_loaded
-    _save_checkpoint_state(scraped_urls, url_to_file, dead_urls)
+        if url_to_title is None:
+            url_to_title = title_loaded
+    _save_checkpoint_state(scraped_urls, url_to_file, dead_urls, url_to_title)
 
 
 def _existing_txt_filenames(news_dir: Path | None = None) -> set[str]:
@@ -404,9 +426,11 @@ def _go_to_next_page(page) -> bool:
 
 @require_internet
 def run() -> PhilRiceNewsScrapeStatus:
+    from src.openstat.services import philrice_news as processing
+
     console.rule("[bold cyan]PhilRice News – title hanggang HOW DOES THIS POST MAKE YOU FEEL + %")
     os.makedirs(PHILRICE_NEWS_DIR, exist_ok=True)
-    scraped, url_to_file, dead_urls = _load_checkpoint_state()
+    scraped, url_to_file, dead_urls, url_to_title = _load_checkpoint_state()
     scraped_set = set(scraped)
     dead_this_run = 0
     existing_filenames = _existing_txt_filenames()
@@ -414,11 +438,20 @@ def run() -> PhilRiceNewsScrapeStatus:
     fetched_this_run = 0
     site_total = 0
     skipped_checkpoint = 0
+    stream = processing.stream_process_enabled()
+    corpus_f = None
+    corpus_path = ""
+    total_stream_records = 0
+
+    if stream:
+        console.print("[dim]PHILRICE_NEWS_STREAM_PROCESS=true — CPT during scrape.[/dim]")
+        corpus_f, corpus_path = processing.open_corpus_for_stream()
 
     if scraped or dead_urls:
+        disk_note = f"{txt_on_disk} .txt on disk" if not stream else "stream mode (no .txt retention)"
         console.print(
             f"[dim]Checkpoint: {len(scraped)} verified URL(s), {len(dead_urls)} dead/404, "
-            f"{txt_on_disk} .txt on disk ({CHECKPOINT_PATH})[/dim]"
+            f"{disk_note} ({CHECKPOINT_PATH})[/dim]"
         )
     console.print(
         f"[dim]Delays: listing={DELAY_PAGE}s, article={DELAY_ARTICLE}s, "
@@ -498,7 +531,7 @@ def run() -> PhilRiceNewsScrapeStatus:
                         console.print(f"[yellow]  Dead link (404), skipping:[/yellow] {url}")
                         dead_urls.add(url)
                         dead_this_run += 1
-                        _save_checkpoint(scraped, url_to_file, dead_urls)
+                        _save_checkpoint(scraped, url_to_file, dead_urls, url_to_title)
                         continue
                     posted = _parse_posted_date(page)
                     if not posted:
@@ -506,34 +539,48 @@ def run() -> PhilRiceNewsScrapeStatus:
                     fname = _safe_filename_from_title_and_date(
                         title_text, posted, url, existing_filenames
                     )
-                    out_path = os.path.join(PHILRICE_NEWS_DIR, fname)
                     body = _extract_article_text_to_feel_section(page)
                     if not body:
                         body = title_text + "\n\n(Content not extracted)"
-                    with open(out_path, "w", encoding="utf-8") as f:
-                        f.write(body)
-                    console.print(f"[green]  {fname}[/green]")
+                    if stream and corpus_f is not None:
+                        total_stream_records += processing.ingest_article_to_corpus(
+                            url, title_text, body, fname, corpus_f
+                        )
+                        console.print(f"[green]  {fname} (stream CPT)[/green]")
+                    else:
+                        out_path = os.path.join(PHILRICE_NEWS_DIR, fname)
+                        with open(out_path, "w", encoding="utf-8") as f:
+                            f.write(body)
+                        console.print(f"[green]  {fname}[/green]")
                     if url not in scraped_set:
                         scraped.append(url)
                         scraped_set.add(url)
                         url_to_file[url] = fname
+                        url_to_title[url] = title_text
                         fetched_this_run += 1
-                    _save_checkpoint(scraped, url_to_file, dead_urls)
+                    _save_checkpoint(scraped, url_to_file, dead_urls, url_to_title)
                 except Exception as e:
                     console.print(f"[yellow]  Skip {url[:50]}...: {e}[/yellow]")
                 time.sleep(DELAY_ARTICLE)
 
-            _save_checkpoint(scraped, url_to_file, dead_urls)
+            _save_checkpoint(scraped, url_to_file, dead_urls, url_to_title)
 
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
-            _save_checkpoint(scraped, url_to_file, dead_urls)
+            _save_checkpoint(scraped, url_to_file, dead_urls, url_to_title)
             raise
         finally:
+            if corpus_f is not None:
+                corpus_f.close()
             page.close()
             browser.close()
 
-    txt_on_disk = len(_existing_txt_filenames())
+    if stream and corpus_path:
+        console.print(
+            f"[dim]Stream corpus records this run: {total_stream_records} -> {corpus_path}[/dim]"
+        )
+
+    txt_on_disk = len(_existing_txt_filenames()) if not stream else 0
     verified = len(scraped_set)
     dead_count = len(dead_urls)
     accounted = verified + dead_count

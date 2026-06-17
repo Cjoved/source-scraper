@@ -18,5 +18,18 @@ def run_corpus_release() -> None:
 
 
 def run_corpus_backup_wasabi() -> None:
-    """Upload latest release bundle to Wasabi S3-compatible storage (P5.4)."""
-    raise NotImplementedError(_PHASE5_MSG)
+    """Legacy monthly job — per-job backup runs after each scrape job (see wasabi_backup.py)."""
+    from src.orchestrator.wasabi_backup import JOB_WASABI_ARTIFACTS, backup_job_artifacts
+    from src.storage.wasabi_store import wasabi_enabled
+
+    if not wasabi_enabled():
+        console.print("[yellow]Wasabi not configured — set WASABI_ACCESS_KEY and WASABI_SECRET_KEY.[/yellow]")
+        return
+
+    console.rule("[bold cyan]Wasabi full sync (all mapped jobs)[/bold cyan]")
+    for job_id in JOB_WASABI_ARTIFACTS:
+        try:
+            backup_job_artifacts(job_id, log=console.print)
+        except Exception as exc:
+            console.print(f"[yellow]{job_id}: {exc}[/yellow]")
+    console.rule("[bold green]Done[/bold green]")

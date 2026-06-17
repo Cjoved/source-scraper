@@ -34,7 +34,6 @@ from pathlib import Path
 
 from src.openstat.agri_corpus.scraper_utils import normalize_url, load_checkpoint, save_checkpoint
 from src.utils.jsonl import append_jsonl
-
 from src.openstat.utils.stealth import apply_page_stealth, stealth_available
 
 HAS_STEALTH = stealth_available()
@@ -43,9 +42,7 @@ load_dotenv()
 console = Console()
 
 PINOYRICE_BASE = "https://www.pinoyrice.com"
-PINOYRICE_JSONL = data_path("pinoyrice_processed", "pinoyrice_corpus.jsonl")
 PINOYRICE_PDFS_DIR = data_path("pinoyrice_pdfs")
-PINOYRICE_TXT_DIR = data_path("pinoyrice_txt")
 CHECKPOINT_PATH = data_path("checkpoints", "pinoyrice_checkpoint.json")
 
 # Pages we SCRAPE FOR TEXT (real article content only). Do not add listing/catalog pages.
@@ -105,21 +102,14 @@ def _save_checkpoint(data: dict):
     save_checkpoint(CHECKPOINT_PATH, data)
 
 
-def _safe_page_filename(url: str) -> str:
-    """Use the full URL as basis for filename, stripping symbols invalid for files."""
-    safe = re.sub(r"[^\w\-.]", "_", url) or "pinoyrice_page"
-    return (safe[:180] + ".txt") if not safe.lower().endswith(".txt") else safe[:180]
+def _save_page_record(record: dict, *, corpus_f) -> int:
+    from src.openstat.services import pinoyrice as processing
 
-
-def _write_per_file_text(url: str, text: str):
-    """Write raw page text to a per-file .txt so we can inspect before cleaning."""
-    if not text:
-        return
-    os.makedirs(PINOYRICE_TXT_DIR, exist_ok=True)
-    fname = _safe_page_filename(url)
-    path = os.path.join(PINOYRICE_TXT_DIR, fname)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
+    if corpus_f is not None:
+        return processing.ingest_record_to_corpus(record, corpus_f)
+    os.makedirs(os.path.dirname(processing.PINOYRICE_SCRAPE_JSONL), exist_ok=True)
+    append_jsonl(record, processing.PINOYRICE_SCRAPE_JSONL)
+    return 1
 
 
 # Strip header/footer at extraction so we never save nav/junk to corpus.
@@ -589,11 +579,21 @@ def download_pdf(context, pdf_url: str, folder: str, index: int, retries: int = 
             time.sleep(DELAY_PDF)
 
 
-def process_pdf_urls(page, context, pdf_urls: list[str], downloaded: set[str], start_index: int) -> int:
+def process_pdf_urls(
+    page,
+    context,
+    pdf_urls: list[str],
+    downloaded: set[str],
+    start_index: int,
+    *,
+    corpus_f=None,
+) -> int:
     """
-    Resolve and download PDF URLs immediately for the current page, instead of
-    queueing a huge global list. Returns next free index for filenames.
+    Resolve and download PDF URLs immediately for the current page.
+    Returns next free index for filenames.
     """
+    from src.openstat.services import pinoyrice as processing
+
     idx = start_index
     for url in pdf_urls:
         if not url:
@@ -607,7 +607,15 @@ def process_pdf_urls(page, context, pdf_urls: list[str], downloaded: set[str], s
             if not resolved:
                 continue
             final_url = resolved
+        pdf_path = processing.pdf_path_for_url(final_url, idx)
         if download_pdf(context, final_url, PINOYRICE_PDFS_DIR, idx):
+            downloaded.add(url)
+            downloaded.add(final_url)
+            if corpus_f is not None and os.path.isfile(pdf_path):
+                processing.ingest_pdf_to_corpus(pdf_path, corpus_f)
+            idx += 1
+        elif corpus_f is not None and os.path.isfile(pdf_path):
+            processing.ingest_pdf_to_corpus(pdf_path, corpus_f)
             downloaded.add(url)
             downloaded.add(final_url)
             idx += 1
@@ -626,9 +634,22 @@ def _doc_id(url: str) -> str:
 
 @require_internet
 def run():
+    from src.openstat.services import pinoyrice as processing
+
     console.rule("[bold cyan]Pinoy Rice Knowledge Bank Scraper")
     os.makedirs(PINOYRICE_PDFS_DIR, exist_ok=True)
-    os.makedirs(os.path.dirname(PINOYRICE_JSONL), exist_ok=True)
+    os.makedirs(processing.PINOYRICE_PROCESSED_DIR, exist_ok=True)
+
+    stream = processing.stream_process_enabled()
+    corpus_f = None
+    corpus_path = None
+    total_stream_records = 0
+    if stream:
+        parts = ["scrape -> process -> append corpus"]
+        if processing.delete_pdf_after_process():
+            parts.append("delete PDF")
+        console.print(f"[dim]Stream mode: {' -> '.join(parts)}[/dim]")
+        corpus_f, corpus_path = processing.open_corpus_for_stream()
 
     console.print(f"[dim]Headless mode: {_HEADLESS} (set HEADLESS=false to show browser)[/dim]")
 
@@ -685,8 +706,7 @@ def run():
                         "title": title,
                         "doc_id": _doc_id(url),
                     }
-                    append_jsonl(record, PINOYRICE_JSONL)
-                    _write_per_file_text(url, raw_text)
+                    total_stream_records += _save_page_record(record, corpus_f=corpus_f)
                     scraped.add(url)
                     console.print(f"[green]  Text: {len(text)} chars[/green]")
                 else:
@@ -734,7 +754,7 @@ def run():
                         pdfs = collect_pdf_links_from_page(page, url)
                         if pdfs:
                             console.print(f"[dim]  PalayCheck PDF links (rescrape): {len(pdfs)}[/dim]")
-                            pdf_index = process_pdf_urls(page, context, pdfs, downloaded, pdf_index)
+                            pdf_index = process_pdf_urls(page, context, pdfs, downloaded, pdf_index, corpus_f=corpus_f)
                     except Exception:
                         pass
                     continue
@@ -754,8 +774,7 @@ def run():
                             "title": title,
                             "doc_id": _doc_id(url),
                         }
-                        append_jsonl(record, PINOYRICE_JSONL)
-                        _write_per_file_text(url, raw_text)
+                        total_stream_records += _save_page_record(record, corpus_f=corpus_f)
                         scraped.add(url)
                         console.print(f"[green]  Text: {len(text)} chars[/green]")
                     else:
@@ -765,7 +784,7 @@ def run():
                     pdfs = collect_pdf_links_from_page(page, url)
                     if pdfs:
                         console.print(f"[dim]  PalayCheck PDF links: {len(pdfs)}[/dim]")
-                        pdf_index = process_pdf_urls(page, context, pdfs, downloaded, pdf_index)
+                        pdf_index = process_pdf_urls(page, context, pdfs, downloaded, pdf_index, corpus_f=corpus_f)
                 except Exception as e:
                     console.print(f"[yellow]Failed {url}: {e}[/yellow]")
                     pdfs = []
@@ -780,7 +799,7 @@ def run():
                     pdfs = collect_pdf_links_from_page(page, url)
                     if pdfs:
                         console.print(f"[dim]  PDF links: {len(pdfs)}[/dim]")
-                        pdf_index = process_pdf_urls(page, context, pdfs, downloaded, pdf_index)
+                        pdf_index = process_pdf_urls(page, context, pdfs, downloaded, pdf_index, corpus_f=corpus_f)
                 except Exception:
                     pass
                 continue
@@ -792,7 +811,7 @@ def run():
                 pdfs = collect_pdf_links_from_page(page, url)
                 if pdfs:
                     console.print(f"[green]  PDF links: {len(pdfs)}[/green]")
-                    pdf_index = process_pdf_urls(page, context, pdfs, downloaded, pdf_index)
+                    pdf_index = process_pdf_urls(page, context, pdfs, downloaded, pdf_index, corpus_f=corpus_f)
                 else:
                     console.print("[dim]  No PDF links.[/dim]")
             except Exception as e:
@@ -811,7 +830,7 @@ def run():
             html_links, pdf_links = collect_variety_links(page, RICE_VARIETIES_URL)
             console.print(f"[dim]  HTML: {len(html_links)}, PDF: {len(pdf_links)}[/dim]")
             if pdf_links:
-                pdf_index = process_pdf_urls(page, context, pdf_links, downloaded, pdf_index)
+                pdf_index = process_pdf_urls(page, context, pdf_links, downloaded, pdf_index, corpus_f=corpus_f)
 
             # ---- 5) Scrape each variety HTML ----
             for url in html_links:
@@ -832,8 +851,7 @@ def run():
                             "title": title,
                             "doc_id": _doc_id(url),
                         }
-                        append_jsonl(record, PINOYRICE_JSONL)
-                        _write_per_file_text(url, raw_text)
+                        total_stream_records += _save_page_record(record, corpus_f=corpus_f)
                         scraped.add(url)
                 except Exception:
                     pass
@@ -846,9 +864,16 @@ def run():
         page.close()
         browser.close()
 
+    if corpus_f is not None:
+        corpus_f.close()
+        console.print(f"[dim]Stream corpus records this run: {total_stream_records} -> {corpus_path}[/dim]")
+
     console.rule("[bold green]Scrape done")
-    console.print(f"Text → [cyan]{PINOYRICE_JSONL}[/cyan]")
-    console.print(f"PDFs → [cyan]{os.path.abspath(PINOYRICE_PDFS_DIR)}[/cyan]")
+    if stream:
+        console.print(f"Corpus -> [cyan]{processing.OUTPUT_JSONL}[/cyan]")
+    else:
+        console.print(f"Staging -> [cyan]{processing.PINOYRICE_SCRAPE_JSONL}[/cyan]")
+    console.print(f"PDFs -> [cyan]{os.path.abspath(PINOYRICE_PDFS_DIR)}[/cyan]")
     console.print(f"Scraped pages: {len(scraped)}, Downloaded PDFs: {len(downloaded)}")
 
 if __name__ == "__main__":

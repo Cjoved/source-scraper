@@ -63,10 +63,18 @@ def main():
     elif philrice_news:
         console.rule("[bold cyan]PhilRice News – Scrape[/bold cyan]")
         from src.openstat.scrapers import philrice_news as scraper_philrice_news
-        scraper_philrice_news.run()
-        console.rule("[bold cyan]PhilRice News – Process (.txt -> CPT JSON)[/bold cyan]")
         from src.openstat.services import philrice_news as processing_philrice_news
-        processing_philrice_news.run()
+
+        scraper_philrice_news.run()
+        if processing_philrice_news.stream_process_enabled():
+            console.print(
+                "[dim]PHILRICE_NEWS_STREAM_PROCESS=true — corpus built during scrape.[/dim]"
+            )
+            console.rule("[bold cyan]PhilRice News – Process (leftovers)[/bold cyan]")
+            processing_philrice_news.run(leftovers_only=True)
+        else:
+            console.rule("[bold cyan]PhilRice News – Process (.txt -> CPT JSON)[/bold cyan]")
+            processing_philrice_news.run(leftovers_only=False)
     elif pinoyrice:
         console.rule("[bold cyan]PinoyRice – Scrape (text + PDF)[/bold cyan]")
         from src.openstat.scrapers import pinoyrice as scraper_pinoyrice

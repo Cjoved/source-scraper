@@ -42,8 +42,15 @@ def run_philrice_news() -> None:
 
     console.rule("[bold cyan]PhilRice News – Scrape[/bold cyan]")
     status = scraper_philrice_news.run()
-    console.rule("[bold cyan]PhilRice News – Process[/bold cyan]")
-    processing_philrice_news.run()
+    if processing_philrice_news.stream_process_enabled():
+        console.print(
+            "[dim]PHILRICE_NEWS_STREAM_PROCESS=true — corpus built during scrape.[/dim]"
+        )
+        console.rule("[bold cyan]PhilRice News – Process (leftovers)[/bold cyan]")
+        processing_philrice_news.run(leftovers_only=True)
+    else:
+        console.rule("[bold cyan]PhilRice News – Process[/bold cyan]")
+        processing_philrice_news.run(leftovers_only=False)
     if status.incomplete:
         msg = (
             f"PhilRice News scrape incomplete: {status.verified_urls}/{status.site_total} "
@@ -65,8 +72,15 @@ def run_pinoyrice() -> None:
 
     console.rule("[bold cyan]PinoyRice – Scrape[/bold cyan]")
     scraper_pinoyrice.run()
-    console.rule("[bold cyan]PinoyRice – Process[/bold cyan]")
-    processing_pinoyrice.run()
+    if processing_pinoyrice.stream_process_enabled():
+        console.print(
+            "[dim]PINOYRICE_STREAM_PROCESS=true — corpus built during scrape.[/dim]"
+        )
+        console.rule("[bold cyan]PinoyRice – Process (leftovers)[/bold cyan]")
+        processing_pinoyrice.run(leftovers_only=True)
+    else:
+        console.rule("[bold cyan]PinoyRice – Process[/bold cyan]")
+        processing_pinoyrice.run(leftovers_only=False)
 
 
 def run_irri() -> None:
@@ -75,8 +89,15 @@ def run_irri() -> None:
 
     console.rule("[bold cyan]IRRI – Scrape[/bold cyan]")
     irri_scraper.run()
-    console.rule("[bold cyan]IRRI – Process[/bold cyan]")
-    processing_irri.run()
+    if processing_irri.stream_process_enabled():
+        console.print(
+            "[dim]IRRI_STREAM_PROCESS=true — corpus built during scrape.[/dim]"
+        )
+        console.rule("[bold cyan]IRRI – Process (leftovers)[/bold cyan]")
+        processing_irri.run(leftovers_only=True)
+    else:
+        console.rule("[bold cyan]IRRI – Process[/bold cyan]")
+        processing_irri.run(leftovers_only=False)
 
 
 def run_openstat() -> None:

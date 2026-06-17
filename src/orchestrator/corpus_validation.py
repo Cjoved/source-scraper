@@ -17,15 +17,13 @@ LogFn = Callable[[str], None]
 JOB_CORPUS_SOURCES: dict[str, tuple[str, ...]] = {
     "philrice": ("philrice",),
     "philrice_news": ("philrice_news",),
-    "pinoyrice": ("pinoyrice", "pinoyrice_pdfs"),
+    "pinoyrice": ("pinoyrice",),
     "irri": ("irri",),
     "prism_scrape": ("prism_browser",),
 }
 
 # Optional sources: validate when file exists; warn if missing (not a failure).
-OPTIONAL_CORPUS_SOURCES: dict[str, frozenset[str]] = {
-    "pinoyrice": frozenset({"pinoyrice_pdfs"}),
-}
+OPTIONAL_CORPUS_SOURCES: dict[str, frozenset[str]] = {}
 
 
 def validate_quality_enabled() -> bool:

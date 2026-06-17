@@ -195,6 +195,22 @@ def run_job(job_id: str, config: OrchestratorConfig | None = None) -> bool:
             else:
                 ctx.write_skipped_validation_report("no_corpus_mapping")
 
+            from src.orchestrator.wasabi_backup import JOB_WASABI_ARTIFACTS, backup_job_artifacts
+            from src.storage.wasabi_store import WasabiUploadError, backup_fail_job, wasabi_enabled
+
+            if wasabi_enabled() and job_id in JOB_WASABI_ARTIFACTS:
+                try:
+                    ctx.set_wasabi_backup(backup_job_artifacts(job_id, log=console.print))
+                except WasabiUploadError as exc:
+                    msg = f"Wasabi backup failed after {job_id}: {exc}"
+                    console.print(f"[red]{msg}[/red]")
+                    log.error("wasabi.backup_failed", error=str(exc))
+                    if backup_fail_job():
+                        ctx.mark_failed(message=msg, error_type="WasabiBackupError")
+                        send_run_alert(ctx)
+                        return False
+                    ctx.add_warning(msg)
+
             ctx.mark_ok()
             success = True
         except Exception as exc:

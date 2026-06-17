@@ -1,6 +1,7 @@
 """
 IRRI Philippines scraper – bawat link: kunin text (main content) at/o i-download PDF kung may link.
 Output: data/irri_processed/text/*.txt, data/irri_pdfs/*.pdf. Checkpoint/resume supported.
+Filename: ``{article title}_{YYYY-MM-DD}.txt`` (saved per article as each listing page is processed).
 """
 from playwright.sync_api import sync_playwright
 from src.openstat.utils import require_internet
@@ -13,6 +14,8 @@ from src.openstat.agri_corpus.scraper_utils import (
 )
 from dotenv import load_dotenv
 from rich.console import Console
+from datetime import datetime
+from pathlib import Path
 import os
 import re
 import json
@@ -44,45 +47,143 @@ IRRI_RANDOM_EXTRA = int(os.getenv("IRRI_RANDOM_EXTRA", "8"))  # 0–N sec random
 BASE_IRRI = "https://www.irri.org"
 BASE_HDL = "https://hdl.handle.net"
 
-# News listing: dito muna, tapos Country dropdown → Philippines → Search → collect news form links
+# News listing: all news by default (no country filter). Set IRRI_SKIP_COUNTRY_SEARCH=false for Philippines only.
 NEWS_LISTING_URL = "https://www.irri.org/news-and-events/news"
-PHILIPPINES_NEWS_LISTING = "https://www.irri.org/news-and-events/news?country=Philippines"  # fallback kung walang dropdown
-# I-skip dropdown at Search (scrape ALL news): .env IRRI_SKIP_COUNTRY_SEARCH=true
-IRRI_SKIP_COUNTRY_SEARCH = os.getenv("IRRI_SKIP_COUNTRY_SEARCH", "false").strip().lower() in ("true", "1", "yes")
+PHILIPPINES_NEWS_LISTING = "https://www.irri.org/news-and-events/news?country=Philippines"  # fallback kung Philippines filter
 # Gamitin bundled Chromium muna (imbes na Chrome/Edge): .env IRRI_USE_CHROMIUM=true – subok kung 403 pa rin sa Chrome
 IRRI_USE_CHROMIUM = os.getenv("IRRI_USE_CHROMIUM", "false").strip().lower() in ("true", "1", "yes")
-# Simulan mula sa listing page N (hal. 13 kung na-block na sa page 13): IRRI_START_PAGE=13 – hindi na dadaan pages 1–12
-_start_page = os.getenv("IRRI_START_PAGE", "").strip()
-IRRI_START_PAGE = max(1, int(_start_page)) if _start_page.isdigit() else 0
 # Cooldown bawat N listing pages (bago mag-next page): IRRI_COOLDOWN_EVERY_N_PAGES=6, IRRI_COOLDOWN_SECONDS=90
 IRRI_COOLDOWN_EVERY_N_PAGES = max(0, int(os.getenv("IRRI_COOLDOWN_EVERY_N_PAGES", "6")))
 IRRI_COOLDOWN_SECONDS = max(0, int(os.getenv("IRRI_COOLDOWN_SECONDS", "90")))
 
-# Starter URL list: reserved kung gusto mong magdagdag pa later,
-# pero by default, IRRI scraper ngayon ay kumukuha lang ng links
-# mula sa All News listing (Country = Philippines).
+
+def _all_news_mode() -> bool:
+    """Default: scrape all IRRI news (no Philippines country filter)."""
+    return os.getenv("IRRI_SKIP_COUNTRY_SEARCH", "true").strip().lower() in ("true", "1", "yes")
+
+
+def _irri_start_page() -> int:
+    raw = os.getenv("IRRI_START_PAGE", "").strip()
+    return max(1, int(raw)) if raw.isdigit() else 0
+
+# Starter URL list: reserved kung gusto mong magdagdag pa later.
+# By default, IRRI scraper kumukuha ng lahat ng news mula sa All News listing.
 IRRI_URLS: list[str] = []
 
+_MONTH = {
+    "jan": "01", "feb": "02", "mar": "03", "apr": "04", "may": "05", "jun": "06",
+    "jul": "07", "aug": "08", "sep": "09", "oct": "10", "nov": "11", "dec": "12",
+}
+IRRI_TITLE_SUFFIX = re.compile(
+    r"\s*[_\|]\s*International Rice Research Institute\s*$",
+    re.IGNORECASE,
+)
+_DATE_IN_TEXT = re.compile(
+    r"(?:^|\n)\s*"
+    r"(?:(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)\s+(\d{4})"
+    r"|([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})"
+    r"|(\d{1,2})\s+([A-Za-z]+)\s+(\d{4}))",
+    re.IGNORECASE,
+)
 
-def _safe_txt_filename_from_title(title: str, url: str, index: int) -> str:
-    """Safe .txt filename = title ng news. Kung walang title, fallback sa URL slug o index."""
-    if title and title.strip():
-        safe = re.sub(r'[<>:"/\\|?*]', "_", title.strip())
-        safe = re.sub(r"\s+", " ", safe).strip()
-        safe = safe[:120].strip()
-        if safe:
-            return safe + ".txt"
+
+def _month_to_mm(month: str) -> str:
+    return _MONTH.get(month.strip()[:3].lower(), "01")
+
+
+def _to_iso_date(year: str, month: str, day: str) -> str:
+    mm = _month_to_mm(month)
+    dd = day.zfill(2)
+    return f"{year}-{mm}-{dd}"
+
+
+def _parse_date_from_text(text: str) -> str | None:
+    """Parse common IRRI article date lines into YYYY-MM-DD."""
+    if not text:
+        return None
+    sample = text[:2500]
+    match = _DATE_IN_TEXT.search(sample)
+    if not match:
+        return None
+    groups = match.groups()
+    if groups[0]:
+        return _to_iso_date(groups[2], groups[1], groups[0])
+    if groups[3]:
+        return _to_iso_date(groups[5], groups[3], groups[4])
+    if groups[6]:
+        return _to_iso_date(groups[8], groups[7], groups[6])
+    return None
+
+
+def _parse_article_date(page, body_text: str = "") -> str | None:
+    """Read article posted date from HTML time element or leading body text."""
     try:
-        parsed = urllib.parse.urlparse(url)
-        path = (parsed.path or "").strip("/")
-        if path:
-            slug = path.replace("/", "_").strip("_")
-        else:
-            slug = f"irri_{index}"
-        slug = re.sub(r"[^\w\-_.]", "_", slug)[:120]
-        return (slug or f"irri_{index}") + ".txt"
+        for sel in [
+            "time[datetime]",
+            ".field--name-field-date time",
+            ".node__meta time",
+            "article time",
+        ]:
+            loc = page.locator(sel).first
+            if loc.count() == 0:
+                continue
+            dt = (loc.get_attribute("datetime") or "").strip()
+            if len(dt) >= 10 and dt[4] == "-":
+                return dt[:10]
     except Exception:
-        return f"irri_{index}.txt"
+        pass
+    return _parse_date_from_text(body_text)
+
+
+def _clean_title_for_filename(title: str) -> str:
+    t = IRRI_TITLE_SUFFIX.sub("", title or "").strip()
+    return re.sub(r"\s+", " ", t)
+
+
+def _safe_filename_from_title_and_date(
+    title: str,
+    date_iso: str,
+    url: str,
+    existing: set[str],
+) -> str:
+    """Readable .txt name: headline + YYYY-MM-DD; collisions get _2, _3, ..."""
+    safe_title = ""
+    cleaned = _clean_title_for_filename(title)
+    if cleaned:
+        safe_title = re.sub(r'[<>:"/\\|?*]', "_", cleaned)
+        safe_title = re.sub(r"\s+", " ", safe_title).strip()[:100]
+
+    if not safe_title:
+        try:
+            path = (urllib.parse.urlparse(url).path or "").strip("/")
+            slug = path.replace("/", "_").strip("_") if path else ""
+            safe_title = re.sub(r"[^\w\-_.]", "_", slug)[:100] if slug else ""
+        except Exception:
+            safe_title = ""
+    if not safe_title:
+        safe_title = "irri_article"
+
+    date_part = date_iso or "unknown-date"
+    base = f"{safe_title}_{date_part}"
+    candidate = f"{base}.txt"
+    if candidate not in existing:
+        existing.add(candidate)
+        return candidate
+
+    n = 2
+    while True:
+        candidate = f"{base}_{n}.txt"
+        if candidate not in existing:
+            existing.add(candidate)
+            return candidate
+        n += 1
+
+
+def _existing_txt_filenames(text_dir: Path | None = None) -> set[str]:
+    root = text_dir or Path(IRRI_TEXT_DIR)
+    if not root.is_dir():
+        return set()
+    return {path.name for path in root.glob("*.txt")}
 
 
 def _extract_main_text(page) -> str:
@@ -212,19 +313,19 @@ def _apply_country_and_search(page) -> bool:
             if loc.count() > 0:
                 try:
                     loc.select_option(label="ALL")
-                    console.print("[dim]  Country (select) → Philippines[/dim]")
+                    console.print("[dim]  Country (select) -> Philippines[/dim]")
                     country_set = True
                     break
                 except Exception:
                     try:
                         loc.select_option(value="18")  # Philippines value sa IRRI form
-                        console.print("[dim]  Country (value 18) → Philippines[/dim]")
+                        console.print("[dim]  Country (value 18) -> Philippines[/dim]")
                         country_set = True
                         break
                     except Exception:
                         try:
                             loc.select_option(value="Philippines")
-                            console.print("[dim]  Country (value Philippines) → Philippines[/dim]")
+                            console.print("[dim]  Country (value Philippines) -> Philippines[/dim]")
                             country_set = True
                             break
                         except Exception:
@@ -247,7 +348,7 @@ def _apply_country_and_search(page) -> bool:
                         ph = page.get_by_role("option", name="Philippines").or_(page.locator('text="Philippines"').first)
                         if ph.count() > 0:
                             ph.first.click()
-                            console.print("[dim]  Country (custom) → Philippines[/dim]")
+                            console.print("[dim]  Country (custom) -> Philippines[/dim]")
                             country_set = True
                             break
                     except Exception:
@@ -334,11 +435,11 @@ def _get_article_links_on_listing_page(page) -> list:
 
 
 def _open_listing_and_apply_search(page) -> bool:
-    """Open news listing. Kung IRRI_SKIP_COUNTRY_SEARCH=true: walang dropdown/Search (all news). Else: Country Philippines → Search."""
+    """Open news listing. Default: all news. Set IRRI_SKIP_COUNTRY_SEARCH=false for Philippines filter."""
     if not _goto_with_retry(page, NEWS_LISTING_URL):
         return False
-    if IRRI_SKIP_COUNTRY_SEARCH:
-        console.print("[dim]  IRRI_SKIP_COUNTRY_SEARCH=true – no dropdown/Search, using All News as-is[/dim]")
+    if _all_news_mode():
+        console.print("[dim]  All News mode (no country filter)[/dim]")
         page.wait_for_timeout(3000)
         return True
     if not _apply_country_and_search(page):
@@ -407,7 +508,17 @@ def _goto_with_retry(page, url: str) -> bool:
 
 @require_internet
 def run():
-    console.rule("[bold cyan]IRRI Philippines – scrape text + download PDFs")
+    from src.openstat.services.irri import (
+        delete_pdf_after_process,
+        delete_txt_after_process,
+        ingest_pdf_to_corpus,
+        ingest_txt_to_corpus,
+        open_corpus_for_stream,
+        pdf_path_for_url,
+        stream_process_enabled,
+    )
+
+    console.rule("[bold cyan]IRRI – scrape all news (text + PDFs)")
     headless = os.getenv("IRRI_HEADLESS", "true").lower() != "false"
     if headless:
         console.print("[dim]Browser: headless. Para makita: .env IRRI_HEADLESS=false[/dim]")
@@ -416,6 +527,20 @@ def run():
     console.print("[dim]Kung 403: warm-up + retry. Subukan: IRRI_HEADLESS=false, IRRI_RETRY_WAIT=60, IRRI_DELAY_PAGE=10[/dim]")
     os.makedirs(IRRI_TEXT_DIR, exist_ok=True)
     os.makedirs(IRRI_PDFS_DIR, exist_ok=True)
+    existing_filenames = _existing_txt_filenames()
+
+    stream = stream_process_enabled()
+    corpus_f = None
+    corpus_path = None
+    total_stream_records = 0
+    if stream:
+        parts = ["download -> process -> append corpus"]
+        if delete_txt_after_process():
+            parts.append("delete .txt")
+        if delete_pdf_after_process():
+            parts.append("delete PDF")
+        console.print(f"[dim]Stream mode: {' -> '.join(parts)}[/dim]")
+        corpus_f, corpus_path = open_corpus_for_stream()
 
     checkpoint = load_checkpoint(CHECKPOINT_PATH, default={"scraped_urls": [], "downloaded_pdf_urls": []})
     done_urls = set(checkpoint.get("scraped_urls", []))
@@ -482,21 +607,22 @@ def run():
             console.print(f"[yellow]Warm-up failed (continuing): {e}[/yellow]")
 
         # --- News listing: (optional Country+Search) → click card → scrape → balik → next card … → Next page ---
-        if IRRI_SKIP_COUNTRY_SEARCH:
-            console.print(f"[bold]Listing: {NEWS_LISTING_URL} (All News, no filter)[/bold]")
+        if _all_news_mode():
+            console.print(f"[bold]Listing: {NEWS_LISTING_URL} (All News)[/bold]")
         else:
-            console.print(f"[bold]Listing: {NEWS_LISTING_URL} → Country Philippines → Search[/bold]")
+            console.print(f"[bold]Listing: {NEWS_LISTING_URL} -> Country Philippines -> Search[/bold]")
         if _open_listing_and_apply_search(page):
             page_num = 1
-            if IRRI_START_PAGE >= 1:
+            start_page = _irri_start_page()
+            if start_page >= 1:
                 # Diretso sa listing page N – para hindi na daanan 1..N-1 (bawasan block)
-                if IRRI_SKIP_COUNTRY_SEARCH:
-                    start_url = f"{NEWS_LISTING_URL}?page={IRRI_START_PAGE}"
+                if _all_news_mode():
+                    start_url = f"{NEWS_LISTING_URL}?page={start_page}"
                 else:
-                    start_url = f"{NEWS_LISTING_URL}?country=Philippines&page={IRRI_START_PAGE}"
-                console.print(f"[bold]IRRI_START_PAGE={IRRI_START_PAGE} → loading [link={start_url}]{start_url}[/link][/bold]")
+                    start_url = f"{NEWS_LISTING_URL}?country=Philippines&page={start_page}"
+                console.print(f"[bold]IRRI_START_PAGE={start_page} -> loading [link={start_url}]{start_url}[/link][/bold]")
                 if _goto_with_retry(page, start_url):
-                    page_num = IRRI_START_PAGE
+                    page_num = start_page
                     page.wait_for_timeout(2000)
                 else:
                     console.print("[yellow]Start page failed – continuing from page 1[/yellow]")
@@ -504,15 +630,23 @@ def run():
             while True:
                 links_on_page = _get_article_links_on_listing_page(page)
                 listing_url = page.url
-                console.print(f"[bold]Listing page {page_num}: {len(links_on_page)} cards → click each, scrape, balik, then next page[/bold]")
+                console.print(
+                    f"[bold]Listing page {page_num}: {len(links_on_page)} cards "
+                    f"(save each article immediately, then next page)[/bold]"
+                )
+                page_fetched: list[str] = []
+                page_skipped = 0
+                page_failed = 0
                 for idx, url in enumerate(links_on_page):
                     url_norm = (url or "").rstrip("/").split("?")[0]
                     if any(u.rstrip("/").split("?")[0] == url_norm for u in done_urls):
                         console.print(f"[dim]  Skip (na-puntahan na): {url[:55]}...[/dim]")
+                        page_skipped += 1
                         continue
                     try:
                         console.print(f"[bold]  Card {idx+1}/{len(links_on_page)}[/bold] {url[:60]}...")
                         if not _goto_with_retry(page, url):
+                            page_failed += 1
                             continue
                         title = page.title() or ""
                         text = _extract_main_text(page)
@@ -520,23 +654,30 @@ def run():
                             text = title + "\n\n(No body content extracted)"
                         if not text:
                             text = f"URL: {url}\n(No content extracted)"
-                        base_name = _safe_txt_filename_from_title(title, url, idx)
+                        posted = _parse_article_date(page, text)
+                        if not posted:
+                            posted = datetime.now().strftime("%Y-%m-%d")
+                        base_name = _safe_filename_from_title_and_date(
+                            title, posted, url, existing_filenames
+                        )
                         txt_path = os.path.join(IRRI_TEXT_DIR, base_name)
-                        if os.path.isfile(txt_path):
-                            stem, ext = os.path.splitext(base_name)
-                            n = 1
-                            while os.path.isfile(os.path.join(IRRI_TEXT_DIR, f"{stem}_{n}{ext}")):
-                                n += 1
-                            base_name = f"{stem}_{n}{ext}"
-                            txt_path = os.path.join(IRRI_TEXT_DIR, base_name)
                         with open(txt_path, "w", encoding="utf-8") as f:
-                            f.write(f"URL: {url}\nTitle: {title}\n\n{text}")
-                        console.print(f"[green]  Text: {base_name}[/green] ({len(text)} chars)")
+                            f.write(f"URL: {url}\nTitle: {title}\nDate: {posted}\n\n{text}")
+                        console.print(f"[green]  Saved: {base_name}[/green] ({len(text)} chars)")
+                        if corpus_f is not None:
+                            total_stream_records += ingest_txt_to_corpus(txt_path, corpus_f)
+                        page_fetched.append(base_name)
                         pdf_links = _collect_pdf_links(page, url)
                         for j, pdf_url in enumerate(pdf_links):
                             if pdf_url in downloaded_pdfs:
                                 continue
+                            pdf_path = pdf_path_for_url(pdf_url)
                             if _download_pdf(context, pdf_url, IRRI_PDFS_DIR, len(downloaded_pdfs) + j):
+                                downloaded_pdfs.add(pdf_url)
+                                if corpus_f is not None and os.path.isfile(pdf_path):
+                                    total_stream_records += ingest_pdf_to_corpus(pdf_path, corpus_f)
+                            elif corpus_f is not None and os.path.isfile(pdf_path):
+                                total_stream_records += ingest_pdf_to_corpus(pdf_path, corpus_f)
                                 downloaded_pdfs.add(pdf_url)
                             time.sleep(DELAY_PDF)
                         done_urls.add(url)
@@ -555,9 +696,18 @@ def run():
                             time.sleep(extra)
                     except Exception as e:
                         console.print(f"[yellow]  Failed: {e}[/yellow]")
+                        page_failed += 1
                         if not _goto_with_retry(page, listing_url):
                             break
                         time.sleep(DELAY_PAGE)
+                console.rule(f"[cyan]Page {page_num} summary[/cyan]")
+                console.print(
+                    f"[bold]Fetched this page:[/bold] {len(page_fetched)} | "
+                    f"[dim]Skipped (checkpoint):[/dim] {page_skipped} | "
+                    f"[yellow]Failed:[/yellow] {page_failed}"
+                )
+                for fname in page_fetched:
+                    console.print(f"  [green]+[/green] {fname}")
                 # Cooldown bawat N pages bago mag-next – bawasan block (hal. page 12 → 13)
                 if (
                     IRRI_COOLDOWN_SECONDS > 0
@@ -565,7 +715,7 @@ def run():
                     and page_num >= IRRI_COOLDOWN_EVERY_N_PAGES
                     and page_num % IRRI_COOLDOWN_EVERY_N_PAGES == 0
                 ):
-                    console.print(f"[yellow]Cooldown {IRRI_COOLDOWN_SECONDS}s bago next page (after page {page_num})…[/yellow]")
+                    console.print(f"[yellow]Cooldown {IRRI_COOLDOWN_SECONDS}s bago next page (after page {page_num})...[/yellow]")
                     time.sleep(IRRI_COOLDOWN_SECONDS)
                 if not _go_to_next_listing_page(page):
                     break
@@ -575,9 +725,13 @@ def run():
         page.close()
         browser.close()
 
+    if corpus_f is not None:
+        corpus_f.close()
+        console.print(f"[dim]Stream corpus records this run: {total_stream_records} -> {corpus_path}[/dim]")
+
     console.rule("[bold green]Done")
-    console.print(f"Text → [cyan]{os.path.abspath(IRRI_TEXT_DIR)}[/cyan]")
-    console.print(f"PDFs → [cyan]{os.path.abspath(IRRI_PDFS_DIR)}[/cyan]")
+    console.print(f"Text -> [cyan]{os.path.abspath(IRRI_TEXT_DIR)}[/cyan]")
+    console.print(f"PDFs -> [cyan]{os.path.abspath(IRRI_PDFS_DIR)}[/cyan]")
     console.print(f"Scraped: {len(done_urls)} URLs, PDFs downloaded: {len(downloaded_pdfs)}")
 
 

@@ -49,6 +49,7 @@ class RunContext:
     validation_reports: list[FileReport] = field(default_factory=list)
     validation_passed: bool | None = None
     corpus_index: dict[str, Any] | None = None
+    wasabi_backup: list[dict[str, str]] | None = None
     skip_reason: str | None = None
 
     @classmethod
@@ -126,6 +127,10 @@ class RunContext:
         self.corpus_index = stats
         self._write_manifest()
 
+    def set_wasabi_backup(self, uploads: list[dict[str, str]]) -> None:
+        self.wasabi_backup = uploads
+        self._write_manifest()
+
     def _finish(self) -> None:
         self.ended_at = datetime.now(UTC)
         self.duration_seconds = round(
@@ -185,6 +190,8 @@ class RunContext:
             }
         if self.corpus_index is not None:
             payload["corpus_index"] = self.corpus_index
+        if self.wasabi_backup is not None:
+            payload["wasabi_backup"] = self.wasabi_backup
         if self.error:
             payload["error"] = self.error
         return payload
