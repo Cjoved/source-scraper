@@ -9,7 +9,14 @@ from src.openstat.utils import (
     wait_for_internet,
     get_cloudflare_cookies,
 )
-from src.openstat.agri_corpus.scraper_utils import load_checkpoint, save_checkpoint
+from src.openstat.scrapers.openstat_checkpoint import (
+    load_completed_urls,
+    merge_and_save_table_csv,
+    normalize_openstat_url,
+    parse_urls_env,
+    save_completed_urls,
+    tag_frames_with_source_url,
+)
 from src.openstat.config import data_path
 from src.openstat.env_flags import openstat_enabled
 from src.openstat.services.openstat import download_and_process_excel
@@ -17,7 +24,6 @@ from dotenv import load_dotenv
 from rich.console import Console
 from datetime import datetime
 import os
-import pandas as pd
 import time
 
 from src.openstat.utils.stealth import apply_page_stealth, stealth_available
@@ -32,6 +38,7 @@ timestamp = datetime.now().strftime("%B%d,%Y_%H-%M-%S")
 # OpenSTAT outputs under data/
 SCRAPER_DOWNLOADS_DIR = data_path("openstat_downloads")
 CHECKPOINT_PATH = data_path("checkpoints", "openstat_checkpoint.json")
+TABLE_CSV_PATH = data_path("openstat_processed", "openstat_table.csv")
 
 
 @require_internet
@@ -113,18 +120,6 @@ MAX_YEARS_PER_SELECTION_SAFETY = 50
 MAX_YEARS_PER_EXPORT = max(1, int(os.getenv("OPENSTAT_MAX_YEARS_PER_BATCH", "4")))
 
 
-def _load_checkpoint():
-    data = load_checkpoint(CHECKPOINT_PATH, default={"completed_url_indices": []})
-    return set(data.get("completed_url_indices", []))
-
-
-def _save_checkpoint(completed_url_indices):
-    save_checkpoint(
-        CHECKPOINT_PATH,
-        {"completed_url_indices": sorted(completed_url_indices)},
-    )
-
-
 def _page_cloudflare_error(page) -> str | None:
     """Return Cloudflare error code if the page is a CF error (522/524), else None."""
     try:
@@ -155,6 +150,10 @@ def scrape_all():
         return
 
     all_data_frames = []
+    urls_updated_this_run: set[str] = set()
+    url_list = parse_urls_env()
+    resume_checkpoint = os.getenv("RESUME_CHECKPOINT", "false").strip().lower() in ("true", "1", "yes")
+    completed_urls_before_run: set[str] = set()
     console.rule(f"[bold cyan]Agri-Price Scraper (OpenSTAT) Started at {timestamp}")
 
     os.makedirs(SCRAPER_DOWNLOADS_DIR, exist_ok=True)
@@ -225,13 +224,17 @@ def scrape_all():
         page.set_default_timeout(60000)
         time.sleep(1)
 
-        resume_checkpoint = os.getenv("RESUME_CHECKPOINT", "false").strip().lower() in ("true", "1", "yes")
         if resume_checkpoint:
-            completed_url_indices = _load_checkpoint()
-            if completed_url_indices:
-                console.print(f"[dim]Resume mode: will skip URL indices already in checkpoint: {sorted(completed_url_indices)}[/dim]")
+            completed_urls = load_completed_urls(CHECKPOINT_PATH, url_list)
+            completed_urls_before_run = set(completed_urls)
+            if completed_urls:
+                console.print(
+                    f"[dim]Resume mode: skip {len(completed_urls)} completed URL(s) "
+                    f"(checkpoint: {CHECKPOINT_PATH})[/dim]"
+                )
         else:
-            completed_url_indices = set()
+            completed_urls = set()
+            completed_urls_before_run = set()
             if os.path.isfile(CHECKPOINT_PATH):
                 try:
                     os.remove(CHECKPOINT_PATH)
@@ -242,9 +245,15 @@ def scrape_all():
         for url_index, url in enumerate(urls):
             if not url or not url.strip():
                 continue
-            url = url.strip()
-            if url_index in completed_url_indices:
-                console.print(f"[dim]Skipping URL {url_index + 1}/{len(urls)} (already completed).[/dim]")
+            url = normalize_openstat_url(url.strip())
+            if not url:
+                continue
+            if resume_checkpoint and url in completed_urls:
+                console.print(
+                    f"[dim]Skipping URL {url_index + 1}/{len(urls)} (checkpoint): {url[:80]}…[/dim]"
+                    if len(url) > 80
+                    else f"[dim]Skipping URL {url_index + 1}/{len(urls)} (checkpoint): {url}[/dim]"
+                )
                 continue
             console.rule(f"[bold green]Processing URL {url_index + 1}/{len(urls)}")
             if not navigate_with_retries(page, url):
@@ -390,12 +399,23 @@ def scrape_all():
                 else:
                     console.print("[dim]All years for this URL done.[/dim]")
 
-            all_data_frames.extend(url_data_frames)
+            all_data_frames.extend(tag_frames_with_source_url(url_data_frames, url))
 
             if not url_skipped_due_to_error and url_data_frames:
-                completed_url_indices.add(url_index)
-                _save_checkpoint(completed_url_indices)
-                console.print(f"[dim]Checkpoint saved: URL {url_index + 1} complete.[/dim]")
+                completed_urls.add(url)
+                urls_updated_this_run.add(url)
+                save_completed_urls(CHECKPOINT_PATH, completed_urls)
+                console.print(f"[dim]Checkpoint saved: {url[:80]}…[/dim]" if len(url) > 80 else f"[dim]Checkpoint saved: {url}[/dim]")
+                # Progressive CSV — partial progress survives crash / deploy mid-run
+                row_count = merge_and_save_table_csv(
+                    all_data_frames,
+                    table_csv_path=TABLE_CSV_PATH,
+                    completed_urls_before_run=completed_urls_before_run,
+                    urls_updated_this_run=urls_updated_this_run,
+                    resume=resume_checkpoint,
+                )
+                if row_count is not None:
+                    console.print(f"[dim]CSV updated ({len(row_count)} rows so far)[/dim]")
             elif not url_skipped_due_to_error and not url_data_frames:
                 console.print(
                     f"[yellow]URL {url_index + 1} finished with no data — "
@@ -404,18 +424,25 @@ def scrape_all():
 
         browser.close()
 
-    if all_data_frames:
-        final_df = pd.concat(all_data_frames, ignore_index=True)
-        if "Commodity" not in final_df.columns:
-            final_df["Commodity"] = final_df.get("Commodity Type", "N/A")
-        col_order = ["Geolocation", "Commodity Type", "Commodity", "Year", "Month", "Price"]
-        final_df = final_df[[c for c in col_order if c in final_df.columns]]
-        processed_dir = data_path("openstat_processed")
-        os.makedirs(processed_dir, exist_ok=True)
+    url_set = {u for u in url_list if u}
+    if url_set and completed_urls >= url_set:
+        try:
+            if os.path.isfile(CHECKPOINT_PATH):
+                os.remove(CHECKPOINT_PATH)
+                console.print("[dim]All URLs complete — checkpoint cleared for next scheduled run.[/dim]")
+        except OSError:
+            pass
 
-        table_csv = os.path.join(processed_dir, "openstat_table.csv")
-        final_df.to_csv(table_csv, index=False)
-        console.print(f"[bold green]✔ Saved table CSV: {table_csv}[/bold green]")
+    if urls_updated_this_run:
+        console.print(
+            f"[bold green]✔ OpenSTAT table CSV: {TABLE_CSV_PATH} "
+            f"({len(urls_updated_this_run)} URL(s) updated this run)[/bold green]"
+        )
+    elif resume_checkpoint and completed_urls_before_run:
+        console.print(
+            "[dim]No new rows this run; existing openstat_table.csv kept "
+            f"({len(completed_urls_before_run)} URL(s) in checkpoint).[/dim]"
+        )
     else:
         console.print("[bold red]No data was scraped![/bold red]")
 

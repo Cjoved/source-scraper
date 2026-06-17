@@ -36,6 +36,8 @@ jobs:
       OPENSTAT: "false"
       IRRI: "false"
       PRISM: "false"
+      PHILRICE_NEWS_STREAM_PROCESS: "true"
+      PHILRICE_NEWS_DELETE_TXT_AFTER_PROCESS: "true"
 
   - id: pinoyrice
     enabled: true
@@ -48,6 +50,7 @@ jobs:
       OPENSTAT: "false"
       IRRI: "false"
       PRISM: "false"
+      PINOYRICE_STREAM_PROCESS: "true"
 
   - id: irri
     enabled: true
@@ -60,6 +63,8 @@ jobs:
       OPENSTAT: "false"
       IRRI: "true"
       PRISM: "false"
+      IRRI_SKIP_COUNTRY_SEARCH: "true"
+      IRRI_STREAM_PROCESS: "true"
 
   - id: openstat
     enabled: true
@@ -72,6 +77,8 @@ jobs:
       OPENSTAT: "true"
       IRRI: "false"
       PRISM: "false"
+      # Monthly full scrape — no manual resume between deploys (see SCHEDULER_SETUP.md)
+      RESUME_CHECKPOINT: "false"
 
   - id: openstat_index
     enabled: true
