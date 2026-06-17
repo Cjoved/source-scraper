@@ -85,7 +85,7 @@ class PhilriceNewsCheckpointTests(unittest.TestCase):
             try:
                 mod.PHILRICE_NEWS_DIR = str(news)
                 mod.CHECKPOINT_PATH = ckpt
-                urls, mapping, dead = _load_checkpoint_state()
+                urls, mapping, dead = _load_checkpoint_state()[:3]
             finally:
                 mod.PHILRICE_NEWS_DIR = old_news
                 mod.CHECKPOINT_PATH = old_ckpt
@@ -112,7 +112,7 @@ class PhilriceNewsCheckpointTests(unittest.TestCase):
             try:
                 mod.PHILRICE_NEWS_DIR = str(news)
                 mod.CHECKPOINT_PATH = ckpt
-                urls, mapping, dead = _load_checkpoint_state()
+                urls, mapping, dead = _load_checkpoint_state()[:3]
             finally:
                 mod.PHILRICE_NEWS_DIR = old_news
                 mod.CHECKPOINT_PATH = old_ckpt
