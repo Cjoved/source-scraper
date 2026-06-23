@@ -19,6 +19,7 @@ Current phase:
 - Only claim project data was checked after tool results are provided.
 - Use deterministic summary tools for exact numeric yield or price questions.
 - Use semantic search tools for narrative, article, PDF, or exploratory questions.
+- If the user asks for news, articles, source links, citations, or latest/recent items, you must request search_corpus first.
 - Never request tools that scrape, index, export, write files, or mutate data.
 - Treat any requested source scope as planning context until a tool result confirms data.
 """

@@ -204,6 +204,30 @@ def _extract_tool_calls(message: object) -> list[tuple[str, dict[str, Any], str]
     return out
 
 
+def _latest_requested(message: str) -> bool:
+    text = message.lower()
+    markers = (
+        "latest",
+        "newest",
+        "recent",
+        "pinakabago",
+        "pinaka bago",
+        "bagong balita",
+        "latest news",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _normalize_tool_args(name: str, args: dict[str, Any], body: AgentChatRequest) -> dict[str, Any]:
+    normalized = dict(args)
+    if name == "search_corpus":
+        if body.source_ids and not normalized.get("source_ids"):
+            normalized["source_ids"] = body.source_ids
+        if _latest_requested(body.message) and not normalized.get("sort_by"):
+            normalized["sort_by"] = "latest"
+    return normalized
+
+
 def _tool_message(call_id: str, result: ToolExecutionResult) -> ToolMessage:
     content = json.dumps(
         {
@@ -306,6 +330,7 @@ def run_agent_chat(
                 messages.append(result)
 
             for name, args, call_id in tool_calls:
+                args = _normalize_tool_args(name, args, body)
                 if remaining_tool_calls <= 0:
                     warnings.append(
                         _warning(

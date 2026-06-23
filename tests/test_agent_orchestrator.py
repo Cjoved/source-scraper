@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from dataclasses import dataclass
 from typing import cast
@@ -232,6 +233,72 @@ class TestAgentOrchestrator(unittest.TestCase):
         self.assertEqual(response.tool_calls[0].result_count, 1)
         self.assertEqual(response.sources[0].source_id, "philrice_news")
         self.assertEqual(response.sources[0].title, "Hybrid seeds update")
+
+    def test_latest_corpus_request_injects_scope_and_latest_sort(self) -> None:
+        store = FakeQdrantStore()
+        store.seed_corpus(
+            [
+                {
+                    "source_id": "irri",
+                    "doc_id": "older",
+                    "title": "Older IRRI news",
+                    "url": "https://example.test/older",
+                    "filename": "older_irri_news_2024-01-15.txt",
+                    "text": "IRRI rice news about farmers.",
+                },
+                {
+                    "source_id": "irri",
+                    "doc_id": "newer",
+                    "title": "Latest IRRI news",
+                    "url": "https://example.test/newer",
+                    "filename": "latest_irri_news_2026-05-20.txt",
+                    "text": "IRRI rice news about farmers.",
+                },
+                {
+                    "source_id": "philrice_news",
+                    "doc_id": "philrice",
+                    "title": "PhilRice news",
+                    "url": "https://example.test/philrice",
+                    "filename": "philrice_news_2026-06-01.txt",
+                    "text": "IRRI rice news about farmers.",
+                },
+            ]
+        )
+        model = ToolCallingModel(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_1",
+                            "name": "search_corpus",
+                            "args": {"query": "IRRI rice news", "limit": 2},
+                        }
+                    ],
+                ),
+                FakeMessage('{"answer": "Latest IRRI news: Latest IRRI news.", "tasklist": []}'),
+            ]
+        )
+
+        with patch("src.agent.orchestrator.create_chat_model", return_value=model):
+            response = run_agent_chat(
+                AgentChatRequest(
+                    message="ano ang latest news sa irri?",
+                    mode=AgentMode.CHAT,
+                    source_ids=["irri"],
+                ),
+                _settings(),
+                store=store,
+            )
+
+        self.assertEqual(response.tool_calls[0].arguments["source_ids"], ["irri"])
+        self.assertEqual(response.tool_calls[0].arguments["sort_by"], "latest")
+        second_invocation = cast(list[object], model.invocations[1])
+        tool_message = next(message for message in second_invocation if isinstance(message, ToolMessage))
+        tool_payload = json.loads(str(tool_message.content))
+        hits = tool_payload["payload"]["hits"]
+        self.assertEqual(hits[0]["title"], "Latest IRRI news")
+        self.assertTrue(all(hit["source_id"] == "irri" for hit in hits))
 
     def test_tool_call_summarizes_prices_with_store(self) -> None:
         store = FakeQdrantStore()

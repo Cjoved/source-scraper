@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
+from datetime import date
+from typing import Literal
 from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
@@ -39,6 +42,7 @@ class SearchCorpusArgs(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
     source_ids: list[str] | None = Field(default=None, max_length=10)
     limit: int = Field(default=5, ge=1, le=MAX_TOOL_LIMIT)
+    sort_by: Literal["relevance", "latest"] = "relevance"
 
 
 class SearchYieldKnowledgeArgs(BaseModel):
@@ -101,25 +105,72 @@ def _source_from_payload(payload: dict[str, Any], *, source_id: str) -> AgentSou
     )
 
 
+def _payload_date(payload: dict[str, Any]) -> date | None:
+    fields = (
+        "date",
+        "published_date",
+        "published_at",
+        "posted",
+        "created_at",
+        "scraped_at",
+        "filename",
+        "doc_id",
+        "url",
+        "title",
+        "text",
+    )
+    for field in fields:
+        value = payload.get(field)
+        if not value:
+            continue
+        match = re.search(
+            r"(?<!\d)(20\d{2}|19\d{2})[-_/](0[1-9]|1[0-2])[-_/]([0-2]\d|3[01])(?!\d)",
+            str(value),
+        )
+        if not match:
+            continue
+        try:
+            return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            continue
+    return None
+
+
+def _sort_corpus_hits(hits: list[Any], sort_by: str) -> list[Any]:
+    if sort_by != "latest":
+        return hits
+    return sorted(
+        hits,
+        key=lambda hit: (
+            _payload_date(hit.payload) is not None,
+            _payload_date(hit.payload) or date.min,
+            hit.score,
+        ),
+        reverse=True,
+    )
+
+
 def _search_corpus_impl(
     ctx: ToolExecutionContext,
     *,
     query: str,
     source_ids: list[str] | None = None,
     limit: int = 5,
+    sort_by: Literal["relevance", "latest"] = "relevance",
 ) -> ToolExecutionResult:
     flt = CorpusFilter(source_ids=tuple(source_ids) if source_ids else None)
     hits = ctx.store.search_corpus(
         query_text=query,
         flt=flt,
-        limit=limit,
+        limit=max(limit, min(50, limit * 5)) if sort_by == "latest" else limit,
         min_score=ctx.min_score,
     )
+    hits = _sort_corpus_hits(hits, sort_by)[:limit]
     payloads = [{"score": hit.score, **hit.payload} for hit in hits]
     sources = [_source_from_payload(hit.payload, source_id="agri_corpus_rag") for hit in hits]
     return ToolExecutionResult(
         name="search_corpus",
-        arguments={"query": query, "source_ids": source_ids, "limit": limit},
+        arguments={"query": query, "source_ids": source_ids, "limit": limit, "sort_by": sort_by},
         summary=f"Found {len(hits)} corpus hit(s).",
         result_count=len(hits),
         payload={"hits": payloads},
@@ -306,7 +357,10 @@ def build_agent_tools(ctx: ToolExecutionContext) -> list[BaseTool]:
     return [
         StructuredTool.from_function(
             name="search_corpus",
-            description="Search the unified narrative agri corpus for articles, PDFs, and PRiSM browser chunks.",
+            description=(
+                "Search the unified narrative agri corpus for articles, PDFs, and PRiSM browser chunks. "
+                "Use sort_by='latest' when the user asks for latest, newest, recent, or pinakabagong news."
+            ),
             args_schema=SearchCorpusArgs,
             func=lambda **kwargs: _search_corpus_impl(ctx, **kwargs),
         ),
