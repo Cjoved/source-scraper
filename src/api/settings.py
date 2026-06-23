@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     default_min_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
     agent_enabled: bool = Field(default=True)
-    agent_provider: str = Field(default="openai_compatible")
+    agent_provider: str = Field(default="deepseek")
     agent_base_url: str = Field(default="")
     agent_api_key: str | None = Field(default=None)
     agent_model: str = Field(default="")
@@ -102,7 +102,9 @@ class Settings(BaseSettings):
     @classmethod
     def _normalize_agent_provider(cls, value: str) -> str:
         normalized = value.lower().strip()
-        allowed = {"openai_compatible"}
+        if normalized == "moonshot":
+            normalized = "kimi"
+        allowed = {"deepseek", "kimi", "openai_compatible"}
         if normalized not in allowed:
             raise ValueError(f"agent_provider must be one of {sorted(allowed)}")
         return normalized
