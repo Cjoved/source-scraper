@@ -50,6 +50,15 @@ class Settings(BaseSettings):
     default_search_limit: int = Field(default=10, gt=0, le=100)
     default_min_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
+    agent_enabled: bool = Field(default=True)
+    agent_provider: str = Field(default="openai_compatible")
+    agent_base_url: str = Field(default="")
+    agent_api_key: str | None = Field(default=None)
+    agent_model: str = Field(default="")
+    agent_timeout_seconds: float = Field(default=60.0, gt=0)
+    agent_max_tool_calls: int = Field(default=4, ge=0, le=8)
+    agent_default_mode: str = Field(default="tasklist")
+
     qdrant_url: str = Field(default="http://localhost:6333")
     qdrant_api_key: str | None = Field(default=None)
     qdrant_timeout_seconds: float = Field(default=30.0, gt=0)
@@ -87,6 +96,24 @@ class Settings(BaseSettings):
         allowed = {"rrf", "dbsf"}
         if normalized not in allowed:
             raise ValueError(f"hybrid_fusion must be one of {sorted(allowed)}")
+        return normalized
+
+    @field_validator("agent_provider")
+    @classmethod
+    def _normalize_agent_provider(cls, value: str) -> str:
+        normalized = value.lower().strip()
+        allowed = {"openai_compatible"}
+        if normalized not in allowed:
+            raise ValueError(f"agent_provider must be one of {sorted(allowed)}")
+        return normalized
+
+    @field_validator("agent_default_mode")
+    @classmethod
+    def _normalize_agent_default_mode(cls, value: str) -> str:
+        normalized = value.lower().strip()
+        allowed = {"chat", "tasklist"}
+        if normalized not in allowed:
+            raise ValueError(f"agent_default_mode must be one of {sorted(allowed)}")
         return normalized
 
     @property

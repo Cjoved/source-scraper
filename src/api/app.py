@@ -13,11 +13,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import cast
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
+from starlette.types import ExceptionHandler
 
 from src.api.errors import (
     ApiError,
@@ -73,6 +75,7 @@ This service exposes scraped datasets over HTTP, backed by Qdrant:
 - **OpenSTAT price structured queries** (`/v1/prices`, `/v1/prices/metadata`, `/v1/prices/summary`, `/v1/prices/export`).
 - **OpenSTAT price hybrid search** (`/v1/prices/search`).
 - **Narrative agri corpus search** (`/v1/corpus/search` — PhilRice, News, PinoyRice, IRRI, PRiSM browser).
+- **AI chat/tasklist agent** (`/v1/agent/chat` — Phase 1 read-only contract).
 - **Operator endpoints** (`/v1/index/status`, `/v1/index/refresh-metadata`, `/v1/prices/refresh-metadata`).
 
 Authentication uses `X-API-Key`. Two scopes: **public** (read endpoints) and
@@ -115,6 +118,13 @@ _OPENAPI_TAGS = [
         ),
     },
     {
+        "name": "agent",
+        "description": (
+            "API-first chat/tasklist agent. Phase 1 exposes a read-only contract; "
+            "model calls and tool execution are added in later phases."
+        ),
+    },
+    {
         "name": "admin",
         "description": (
             "Operator endpoints: index counts, source freshness, in-memory cache rebuild."
@@ -153,10 +163,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_headers=["Authorization", "X-API-Key", "Content-Type"],
         )
 
-    app.add_exception_handler(ApiError, api_error_handler)
-    app.add_exception_handler(RequestValidationError, validation_error_handler)
-    app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
-    app.add_exception_handler(Exception, unexpected_error_handler)
+    app.add_exception_handler(ApiError, cast(ExceptionHandler, api_error_handler))
+    app.add_exception_handler(
+        RequestValidationError,
+        cast(ExceptionHandler, validation_error_handler),
+    )
+    app.add_exception_handler(RateLimitExceeded, cast(ExceptionHandler, rate_limit_handler))
+    app.add_exception_handler(Exception, cast(ExceptionHandler, unexpected_error_handler))
 
     app.include_router(build_v1_router())
 

@@ -205,6 +205,86 @@ class CorpusSearchResponse(BaseModel):
     took_ms: float
 
 
+class AgentMode(StrEnum):
+    CHAT = "chat"
+    TASKLIST = "tasklist"
+
+
+class AgentChatMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"] = Field(description="Conversation message role.")
+    content: Annotated[str, Field(min_length=1, max_length=4000)]
+
+
+class AgentTask(BaseModel):
+    status: Literal["pending", "in_progress", "completed", "cancelled"] = "pending"
+    task: Annotated[str, Field(min_length=1, max_length=1000)]
+
+
+class AgentToolCall(BaseModel):
+    name: str
+    arguments: dict[str, object] = Field(default_factory=dict)
+    summary: str = ""
+    result_count: int = 0
+
+
+class AgentSource(BaseModel):
+    source_id: str | None = None
+    title: str | None = None
+    url: str | None = None
+    filename: str | None = None
+    page: int | None = None
+    snippet: str | None = None
+
+
+class AgentWarning(BaseModel):
+    code: Annotated[str, Field(min_length=1, max_length=100)]
+    message: Annotated[str, Field(min_length=1, max_length=1000)]
+
+
+class AgentChatRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "message": "Gawan mo ako ng tasklist para hanapin ang rice disease articles sa PhilRice at IRRI",
+                    "mode": "tasklist",
+                    "source_ids": ["philrice_news", "irri"],
+                },
+                {
+                    "message": "Ano ang dapat kong i-check sa corpus RAG pipeline?",
+                    "mode": "chat",
+                },
+            ]
+        },
+    )
+
+    message: Annotated[str, Field(min_length=1, max_length=4000)]
+    mode: AgentMode | None = Field(
+        default=None,
+        description="Optional response mode. Defaults to AGENT_DEFAULT_MODE.",
+    )
+    conversation_id: Annotated[str | None, Field(max_length=128)] = None
+    history: list[AgentChatMessage] = Field(default_factory=list, max_length=20)
+    source_ids: list[str] | None = Field(
+        default=None,
+        max_length=10,
+        description="Optional source ids the agent may use in later tool-backed phases.",
+    )
+    max_tool_calls: Annotated[int | None, Field(ge=0, le=8)] = None
+
+
+class AgentChatResponse(BaseModel):
+    answer: str
+    tasklist: list[AgentTask] = Field(default_factory=list)
+    tool_calls: list[AgentToolCall] = Field(default_factory=list)
+    sources: list[AgentSource] = Field(default_factory=list)
+    warnings: list[AgentWarning] = Field(default_factory=list)
+    took_ms: float
+
+
 class PriceRow(BaseModel):
     model_config = ConfigDict(frozen=True)
 
