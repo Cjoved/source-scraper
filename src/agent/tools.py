@@ -5,8 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 from datetime import date
-from typing import Literal
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
@@ -16,10 +15,11 @@ from src.services.aggregation import aggregate_rows
 from src.services.filters import build_yield_filter
 from src.services.price_aggregation import aggregate_price_rows
 from src.services.price_filters import build_price_filter
-from src.storage.qdrant_store import CorpusFilter, QdrantStoreProtocol
+from src.storage.qdrant_store import CorpusFilter, KnowledgeHitRecord, QdrantStoreProtocol
 
 MAX_TOOL_LIMIT = 10
 SNIPPET_CHARS = 500
+LATEST_CORPUS_SCAN_LIMIT = 5000
 
 
 @dataclass(frozen=True)
@@ -90,19 +90,45 @@ def _snippet(value: object) -> str:
     return text[:SNIPPET_CHARS]
 
 
+def _string_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _int_or_none(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 def _semester(value: int | None) -> SemesterCode | None:
     return SemesterCode(value) if value in (1, 2) else None
 
 
 def _source_from_payload(payload: dict[str, Any], *, source_id: str) -> AgentSource:
     return AgentSource(
-        source_id=str(payload.get("source_id") or source_id),
-        title=str(payload["title"]) if payload.get("title") else None,
-        url=str(payload["url"]) if payload.get("url") else None,
-        filename=str(payload["filename"]) if payload.get("filename") else None,
-        page=int(payload["page"]) if payload.get("page") is not None else None,
+        source_id=_string_or_none(payload.get("source_id")) or source_id,
+        title=_string_or_none(payload.get("title")),
+        url=_string_or_none(payload.get("url")),
+        filename=_string_or_none(payload.get("filename")),
+        page=_int_or_none(payload.get("page")),
         snippet=_snippet(payload.get("text") or payload),
     )
+
+
+def _scope_snippet(prefix: str, scope: BaseModel, row_count: int) -> str:
+    filters = {
+        key: value
+        for key, value in scope.model_dump(mode="json").items()
+        if value is not None
+    }
+    suffix = f" Filters: {filters}." if filters else ""
+    return _snippet(f"{prefix} over {row_count} row(s).{suffix}")
 
 
 def _payload_date(payload: dict[str, Any]) -> date | None:
@@ -150,6 +176,20 @@ def _sort_corpus_hits(hits: list[Any], sort_by: str) -> list[Any]:
     )
 
 
+def _latest_corpus_hits(
+    ctx: ToolExecutionContext,
+    *,
+    flt: CorpusFilter,
+    limit: int,
+) -> list[KnowledgeHitRecord]:
+    candidates: list[KnowledgeHitRecord] = []
+    for payload in ctx.store.iter_corpus_rows(flt, max_rows=LATEST_CORPUS_SCAN_LIMIT):
+        if _payload_date(payload) is None:
+            continue
+        candidates.append(KnowledgeHitRecord(score=1.0, payload=payload))
+    return _sort_corpus_hits(candidates, "latest")[:limit]
+
+
 def _search_corpus_impl(
     ctx: ToolExecutionContext,
     *,
@@ -159,13 +199,15 @@ def _search_corpus_impl(
     sort_by: Literal["relevance", "latest"] = "relevance",
 ) -> ToolExecutionResult:
     flt = CorpusFilter(source_ids=tuple(source_ids) if source_ids else None)
-    hits = ctx.store.search_corpus(
-        query_text=query,
-        flt=flt,
-        limit=max(limit, min(50, limit * 5)) if sort_by == "latest" else limit,
-        min_score=ctx.min_score,
-    )
-    hits = _sort_corpus_hits(hits, sort_by)[:limit]
+    if sort_by == "latest":
+        hits = _latest_corpus_hits(ctx, flt=flt, limit=limit)
+    else:
+        hits = ctx.store.search_corpus(
+            query_text=query,
+            flt=flt,
+            limit=limit,
+            min_score=ctx.min_score,
+        )
     payloads = [{"score": hit.score, **hit.payload} for hit in hits]
     sources = [_source_from_payload(hit.payload, source_id="agri_corpus_rag") for hit in hits]
     return ToolExecutionResult(
@@ -251,18 +293,19 @@ def _summarize_yield_impl(
     summary = aggregate_rows(rows, scope=scope)
     payload = summary.model_dump(mode="json")
     row_count = summary.overall.row_count
+    sources = [
+        AgentSource(
+            source_id="prism_yield_records",
+            snippet=_scope_snippet("Deterministic yield summary", scope, row_count),
+        )
+    ] if row_count else []
     return ToolExecutionResult(
         name="summarize_yield",
         arguments=scope.model_dump(mode="json"),
         summary=f"Computed yield summary over {row_count} row(s).",
         result_count=row_count,
         payload=payload,
-        sources=[
-            AgentSource(
-                source_id="prism_yield_records",
-                snippet=f"Deterministic yield summary over {row_count} row(s).",
-            )
-        ],
+        sources=sources,
     )
 
 
@@ -338,18 +381,19 @@ def _summarize_prices_impl(
     summary = aggregate_price_rows(rows, scope=scope)
     payload = summary.model_dump(mode="json")
     row_count = summary.overall.row_count
+    sources = [
+        AgentSource(
+            source_id="openstat_price_records",
+            snippet=_scope_snippet("Deterministic price summary", scope, row_count),
+        )
+    ] if row_count else []
     return ToolExecutionResult(
         name="summarize_prices",
         arguments=scope.model_dump(mode="json"),
         summary=f"Computed price summary over {row_count} row(s).",
         result_count=row_count,
         payload=payload,
-        sources=[
-            AgentSource(
-                source_id="openstat_price_records",
-                snippet=f"Deterministic price summary over {row_count} row(s).",
-            )
-        ],
+        sources=sources,
     )
 
 

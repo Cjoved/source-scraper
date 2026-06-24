@@ -13,9 +13,12 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.agent.client import AgentClientError, create_chat_model
+from src.agent.intent import FarmerIntentResult, infer_farmer_intent
 from src.agent.prompts import build_agent_messages
+from src.agent.query_planner import AgentQueryPlan, build_query_plan, query_plan_text
 from src.agent.tools import ToolExecutionContext, ToolExecutionResult, build_agent_tools
 from src.api.schemas import (
+    AgentConfidence,
     AgentChatRequest,
     AgentChatResponse,
     AgentMode,
@@ -26,6 +29,19 @@ from src.api.schemas import (
 )
 from src.api.settings import Settings
 from src.storage.qdrant_store import QdrantStoreProtocol
+
+
+DETERMINISTIC_TOOLS = {"summarize_yield", "summarize_prices"}
+SEARCH_TOOLS = {"search_corpus", "search_yield_knowledge", "search_prices"}
+SEVERE_WARNING_CODES = {
+    "agent_disabled",
+    "agent_api_key_missing",
+    "agent_base_url_missing",
+    "agent_dependency_missing",
+    "tool_execution_failed",
+    "qdrant_unavailable",
+    "no_results",
+}
 
 
 class AgentModelOutput(BaseModel):
@@ -121,6 +137,146 @@ def _is_timeout_exception(exc: Exception) -> bool:
     return "timeout" in name or "timed out" in message or "timeout" in message
 
 
+def _is_qdrant_exception(exc: Exception) -> bool:
+    text = f"{exc.__class__.__name__} {exc}".lower()
+    markers = (
+        "qdrant",
+        "connection refused",
+        "connecterror",
+        "connectionerror",
+        "readtimeout",
+        "timed out",
+        "timeout",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _has_warning(warnings: list[AgentWarning], code: str) -> bool:
+    return any(warning.code == code for warning in warnings)
+
+
+def _add_no_results_warning(
+    warnings: list[AgentWarning],
+    tool_calls: list[AgentToolCall],
+) -> None:
+    if not tool_calls or any(call.result_count > 0 for call in tool_calls):
+        return
+    if _has_warning(warnings, "no_results"):
+        return
+    searched = ", ".join(call.name for call in tool_calls)
+    warnings.append(
+        _warning(
+            "no_results",
+            f"No matching data found from: {searched}.",
+        )
+    )
+
+
+def _confidence(
+    *,
+    tool_calls: list[AgentToolCall],
+    sources: list[AgentSource],
+    warnings: list[AgentWarning],
+) -> AgentConfidence:
+    warning_codes = {warning.code for warning in warnings}
+    if warning_codes & SEVERE_WARNING_CODES:
+        return AgentConfidence.LOW
+    if any(call.name in DETERMINISTIC_TOOLS and call.result_count > 0 for call in tool_calls):
+        return AgentConfidence.HIGH
+    if sources and any(call.name in SEARCH_TOOLS and call.result_count > 0 for call in tool_calls):
+        return AgentConfidence.MEDIUM
+    return AgentConfidence.LOW
+
+
+def _tool_cache_key(name: str, args: dict[str, Any]) -> str:
+    return json.dumps({"name": name, "args": args}, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _best_tool_answer(
+    tool_calls: list[AgentToolCall],
+    tool_results: list[ToolExecutionResult] | None = None,
+) -> str | None:
+    successful = [call for call in tool_calls if call.result_count > 0]
+    if not successful:
+        return None
+
+    deterministic = [call for call in successful if call.name in DETERMINISTIC_TOOLS]
+    best = deterministic[0] if deterministic else successful[0]
+    best_result = next(
+        (
+            result
+            for result in tool_results or []
+            if result.name == best.name
+            and result.result_count == best.result_count
+            and result.arguments == best.arguments
+        ),
+        None,
+    )
+    if best.name == "summarize_yield":
+        avg_yield = _payload_overall_value(best_result, "avg_yield_ton_ha")
+        if avg_yield is not None:
+            return (
+                f"Average yield: {avg_yield} ton/ha gamit ang filters {best.arguments}. "
+                f"Based ito sa {best.result_count} matching row(s)."
+            )
+        return (
+            f"Nakakuha ako ng deterministic yield summary gamit ang filters {best.arguments}. "
+            f"May {best.result_count} matching row(s). Tingnan ang `sources` at `tool_calls` para sa detalye."
+        )
+    if best.name == "summarize_prices":
+        avg_price = _payload_overall_value(best_result, "avg_price_php_per_kg")
+        if avg_price is not None:
+            return (
+                f"Average price: PHP {avg_price}/kg gamit ang filters {best.arguments}. "
+                f"Based ito sa {best.result_count} matching row(s)."
+            )
+        return (
+            f"Nakakuha ako ng deterministic price summary gamit ang filters {best.arguments}. "
+            f"May {best.result_count} matching row(s). Tingnan ang `sources` at `tool_calls` para sa detalye."
+        )
+    return (
+        f"Nakahanap ako ng {best.result_count} matching result(s) gamit ang `{best.name}`. "
+        "Tingnan ang `sources` at `tool_calls` para sa detalye."
+    )
+
+
+def _payload_overall_value(tool_result: ToolExecutionResult | None, key: str) -> object | None:
+    if tool_result is None:
+        return None
+    payload = tool_result.payload
+    if not isinstance(payload, dict):
+        return None
+    overall = payload.get("overall")
+    if not isinstance(overall, dict):
+        return None
+    return overall.get(key)
+
+
+def _tool_backed_fallback_response(
+    *,
+    body: AgentChatRequest,
+    mode: AgentMode,
+    warnings: list[AgentWarning],
+    started: float,
+    tool_calls: list[AgentToolCall],
+    tool_results: list[ToolExecutionResult],
+    sources: list[AgentSource],
+) -> AgentChatResponse | None:
+    answer = _best_tool_answer(tool_calls, tool_results)
+    if not answer:
+        return None
+    deduped_sources = _dedupe_sources(sources)
+    return AgentChatResponse(
+        answer=answer,
+        tasklist=_fallback_tasklist(body.message, body.source_ids) if mode == AgentMode.TASKLIST else [],
+        tool_calls=tool_calls,
+        sources=deduped_sources,
+        warnings=warnings,
+        confidence=_confidence(tool_calls=tool_calls, sources=deduped_sources, warnings=warnings),
+        took_ms=round((time.perf_counter() - started) * 1000, 2),
+    )
+
+
 def _fallback_response(
     *,
     body: AgentChatRequest,
@@ -148,6 +304,7 @@ def _fallback_response(
         tool_calls=tool_calls or [],
         sources=sources or [],
         warnings=warnings,
+        confidence=AgentConfidence.LOW,
         took_ms=round((time.perf_counter() - started) * 1000, 2),
     )
 
@@ -218,14 +375,59 @@ def _latest_requested(message: str) -> bool:
     return any(marker in text for marker in markers)
 
 
-def _normalize_tool_args(name: str, args: dict[str, Any], body: AgentChatRequest) -> dict[str, Any]:
+def _normalize_tool_args(
+    name: str,
+    args: dict[str, Any],
+    body: AgentChatRequest,
+    query_plan: AgentQueryPlan,
+) -> dict[str, Any]:
     normalized = dict(args)
     if name == "search_corpus":
-        if body.source_ids and not normalized.get("source_ids"):
-            normalized["source_ids"] = body.source_ids
+        if query_plan.source_ids:
+            normalized["source_ids"] = query_plan.source_ids
         if _latest_requested(body.message) and not normalized.get("sort_by"):
             normalized["sort_by"] = "latest"
+    if name in {"search_prices", "summarize_prices"}:
+        if query_plan.location:
+            normalized["geolocation"] = query_plan.location
+        if query_plan.commodity:
+            normalized["commodity"] = query_plan.commodity
+        if query_plan.date_range.year_min is not None:
+            normalized["year_min"] = query_plan.date_range.year_min
+        if query_plan.date_range.year_max is not None:
+            normalized["year_max"] = query_plan.date_range.year_max
+        if query_plan.date_range.month:
+            normalized["month"] = query_plan.date_range.month
+        if name == "search_prices" and not normalized.get("query"):
+            normalized["query"] = body.message
+    if name in {"search_yield_knowledge", "summarize_yield"}:
+        if query_plan.location and not any(
+            normalized.get(key) for key in ("region", "province", "municipality")
+        ):
+            normalized["province"] = query_plan.location
+        if query_plan.date_range.year_min is not None:
+            normalized["year_min"] = query_plan.date_range.year_min
+        if query_plan.date_range.year_max is not None:
+            normalized["year_max"] = query_plan.date_range.year_max
+        if name == "search_yield_knowledge" and not normalized.get("query"):
+            normalized["query"] = body.message
     return normalized
+
+
+def _farmer_context_text(result: FarmerIntentResult) -> str:
+    parts = [
+        f"user_type={result.user_type}",
+        f"intent={result.intent}",
+        f"language={result.language}",
+        f"location={result.location or 'not specified'}",
+        f"crop={result.crop or 'not specified'}",
+        f"missing_context={result.missing_context}",
+    ]
+    if result.clarification_question:
+        parts.append(f"clarification_question={result.clarification_question}")
+    if result.recommended_source_ids:
+        parts.append(f"recommended_source_ids={', '.join(result.recommended_source_ids)}")
+    return "\n".join(parts)
 
 
 def _tool_message(call_id: str, result: ToolExecutionResult) -> ToolMessage:
@@ -263,7 +465,9 @@ def run_agent_chat(
     mode = _resolve_mode(body, settings)
     warnings: list[AgentWarning] = []
     tool_call_records: list[AgentToolCall] = []
+    tool_results: list[ToolExecutionResult] = []
     sources: list[AgentSource] = []
+    tool_result_cache: dict[str, ToolExecutionResult] = {}
 
     if not settings.agent_enabled:
         warnings.append(_warning("agent_disabled", "Agent is disabled by configuration."))
@@ -275,11 +479,28 @@ def run_agent_chat(
         warnings.append(_warning(exc.code, exc.message))
         return _fallback_response(body=body, mode=mode, warnings=warnings, started=started)
 
+    farmer_context = infer_farmer_intent(
+        message=body.message,
+        user_type=body.user_type.value,
+        location=body.location,
+        crop=body.crop,
+        language=body.language,
+        source_ids=body.source_ids,
+    )
+    query_plan = build_query_plan(
+        message=body.message,
+        farmer_context=farmer_context,
+        source_ids=body.source_ids,
+    )
+    warnings.extend(query_plan.warnings)
+
     messages: list[BaseMessage] = build_agent_messages(
         message=body.message,
         mode=mode,
         history=body.history,
         source_ids=body.source_ids,
+        farmer_context=_farmer_context_text(farmer_context),
+        query_plan_context=query_plan_text(query_plan),
     )
     tools = build_agent_tools(ToolExecutionContext(store)) if store is not None else []
     tool_by_name = {tool.name: tool for tool in tools}
@@ -299,6 +520,18 @@ def run_agent_chat(
                 else f"LangChain model call failed ({exc.__class__.__name__})."
             )
             warnings.append(_warning(code, message))
+            _add_no_results_warning(warnings, tool_call_records)
+            tool_backed = _tool_backed_fallback_response(
+                body=body,
+                mode=mode,
+                warnings=warnings,
+                started=started,
+                tool_calls=tool_call_records,
+                tool_results=tool_results,
+                sources=_dedupe_sources(sources),
+            )
+            if tool_backed is not None:
+                return tool_backed
             return _fallback_response(
                 body=body,
                 mode=mode,
@@ -317,6 +550,17 @@ def run_agent_chat(
                         "Model requested more tool calls than AGENT_MAX_TOOL_CALLS allows.",
                     )
                 )
+                tool_backed = _tool_backed_fallback_response(
+                    body=body,
+                    mode=mode,
+                    warnings=warnings,
+                    started=started,
+                    tool_calls=tool_call_records,
+                    tool_results=tool_results,
+                    sources=_dedupe_sources(sources),
+                )
+                if tool_backed is not None:
+                    return tool_backed
                 return _fallback_response(
                     body=body,
                     mode=mode,
@@ -330,7 +574,12 @@ def run_agent_chat(
                 messages.append(result)
 
             for name, args, call_id in tool_calls:
-                args = _normalize_tool_args(name, args, body)
+                args = _normalize_tool_args(name, args, body, query_plan)
+                cache_key = _tool_cache_key(name, args)
+                cached_result = tool_result_cache.get(cache_key)
+                if cached_result is not None:
+                    messages.append(_tool_message(call_id, cached_result))
+                    continue
                 if remaining_tool_calls <= 0:
                     warnings.append(
                         _warning(
@@ -338,6 +587,17 @@ def run_agent_chat(
                             "Model requested more tool calls than AGENT_MAX_TOOL_CALLS allows.",
                         )
                     )
+                    tool_backed = _tool_backed_fallback_response(
+                        body=body,
+                        mode=mode,
+                        warnings=warnings,
+                        started=started,
+                        tool_calls=tool_call_records,
+                        tool_results=tool_results,
+                        sources=_dedupe_sources(sources),
+                    )
+                    if tool_backed is not None:
+                        return tool_backed
                     return _fallback_response(
                         body=body,
                         mode=mode,
@@ -364,8 +624,14 @@ def run_agent_chat(
                     if not isinstance(tool_result, ToolExecutionResult):
                         raise TypeError("Tool returned an unexpected result type.")
                 except Exception as exc:
+                    code = "qdrant_unavailable" if _is_qdrant_exception(exc) else "tool_execution_failed"
+                    message = (
+                        f"Tool {name} could not reach Qdrant or storage ({exc.__class__.__name__})."
+                        if code == "qdrant_unavailable"
+                        else f"Tool {name} failed ({exc.__class__.__name__})."
+                    )
                     warnings.append(
-                        _warning("tool_execution_failed", f"Tool {name} failed ({exc.__class__.__name__}).")
+                        _warning(code, message)
                     )
                     messages.append(
                         ToolMessage(
@@ -386,10 +652,13 @@ def run_agent_chat(
                     )
                 )
                 sources.extend(tool_result.sources)
+                tool_results.append(tool_result)
+                tool_result_cache[cache_key] = tool_result
                 messages.append(_tool_message(call_id, tool_result))
                 remaining_tool_calls -= 1
             continue
 
+        _add_no_results_warning(warnings, tool_call_records)
         try:
             raw_content = getattr(result, "content", result)
             parsed = _parse_model_output(_content_to_text(raw_content), mode=mode, body=body)
@@ -428,5 +697,10 @@ def run_agent_chat(
         tool_calls=tool_call_records,
         sources=_dedupe_sources(sources),
         warnings=warnings,
+        confidence=_confidence(
+            tool_calls=tool_call_records,
+            sources=_dedupe_sources(sources),
+            warnings=warnings,
+        ),
         took_ms=round((time.perf_counter() - started) * 1000, 2),
     )

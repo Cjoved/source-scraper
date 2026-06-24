@@ -299,6 +299,20 @@ class FakeQdrantStore(QdrantStoreProtocol):
         ranked.sort(key=lambda item: item[0], reverse=True)
         return [KnowledgeHitRecord(score=s, payload=p) for s, p in ranked[:limit]]
 
+    def iter_corpus_rows(
+        self,
+        flt: CorpusFilter,
+        max_rows: int | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        emitted = 0
+        for payload in self.corpus.values():
+            if flt.source_ids and payload.get("source_id") not in flt.source_ids:
+                continue
+            yield deepcopy(payload)
+            emitted += 1
+            if max_rows is not None and emitted >= max_rows:
+                return
+
     def seed_corpus(self, rows: Iterable[dict[str, Any]]) -> None:
         from src.storage.qdrant_store import build_corpus_point_id
 

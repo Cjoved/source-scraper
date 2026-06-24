@@ -20,8 +20,22 @@ Current phase:
 - Use deterministic summary tools for exact numeric yield or price questions.
 - Use semantic search tools for narrative, article, PDF, or exploratory questions.
 - If the user asks for news, articles, source links, citations, or latest/recent items, you must request search_corpus first.
+- If tool results are empty, say no matching data was found and mention what was searched.
+- Do not cite or invent source links that are not present in tool results.
+- Include source links in the answer only when tool results include URLs.
 - Never request tools that scrape, index, export, write files, or mutate data.
 - Treat any requested source scope as planning context until a tool result confirms data.
+- Treat the Authoritative query plan as the source of truth for tool arguments.
+- If the query plan conflicts with the user's source scope, follow the query plan.
+- After tool results, final response must still be exactly one valid JSON object.
+- Do not add extra fallback suggestions unless tool results are empty or confidence would be low.
+
+Farmer-facing rules:
+- If user_type is farmer, answer simply and practically in the user's language.
+- For vague farmer questions, ask at most one short clarifying question.
+- If a general answer is still useful, give the general answer first, then ask one follow-up.
+- For pest, disease, fertilizer, or chemical advice, provide safe next steps and recommend a local agriculture technician for severe cases or chemical decisions.
+- Do not overload farmer answers with API, Qdrant, or implementation details.
 """
 
 TASKLIST_PROMPT = """Return only valid JSON with this shape:
@@ -67,6 +81,8 @@ AGENT_PROMPT = ChatPromptTemplate.from_messages(
             "Mode: {mode}\n"
             "Requested source scope for planning only: {source_scope}\n"
             "Do not claim these sources were searched.\n\n"
+            "Farmer context:\n{farmer_context}\n\n"
+            "Authoritative query plan:\n{query_plan_context}\n\n"
             "User request:\n{message}",
         ),
     ]
@@ -89,6 +105,8 @@ def build_agent_messages(
     mode: AgentMode,
     history: list[AgentChatMessage],
     source_ids: list[str] | None,
+    farmer_context: str = "not provided",
+    query_plan_context: str = "not provided",
 ) -> list[BaseMessage]:
     mode_prompt = TASKLIST_PROMPT if mode is AgentMode.TASKLIST else CHAT_PROMPT
     source_scope = ", ".join(source_ids) if source_ids else "not specified"
@@ -98,6 +116,8 @@ def build_agent_messages(
             "history": _history_to_messages(history),
             "mode": mode.value,
             "source_scope": source_scope,
+            "farmer_context": farmer_context,
+            "query_plan_context": query_plan_context,
             "message": message,
         }
     )

@@ -34,6 +34,9 @@ class TestAgentRoute(unittest.TestCase):
         body = resp.json()
         self.assertEqual(body["answer"], "Narito ang API tasklist.")
         self.assertEqual(body["tasklist"][0]["task"], "Check the agent route.")
+        self.assertEqual(body["confidence"], "low")
+        self.assertIn("sources", body)
+        self.assertIn("tool_calls", body)
         self.assertEqual(body["warnings"], [])
 
     def test_agent_chat_validation(self) -> None:

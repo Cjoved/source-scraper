@@ -215,6 +215,12 @@ class QdrantStoreProtocol(Protocol):
         min_score: float,
     ) -> list[KnowledgeHitRecord]: ...
 
+    def iter_corpus_rows(
+        self,
+        flt: CorpusFilter,
+        max_rows: int | None = None,
+    ) -> Iterator[dict[str, Any]]: ...
+
     def collection_stats(self) -> list[CollectionStats]: ...
 
 
@@ -804,6 +810,38 @@ class QdrantStore:
             payload = dict(getattr(point, "payload", None) or {})
             hits.append(KnowledgeHitRecord(score=score, payload=payload))
         return hits
+
+    def iter_corpus_rows(
+        self,
+        flt: CorpusFilter,
+        max_rows: int | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        page_size = 512
+        next_page_token: Any = None
+        emitted = 0
+        qdrant_filter = self._build_corpus_filter(flt)
+
+        while True:
+            try:
+                points, next_page_token = self._client.scroll(
+                    collection_name=self.corpus_name,
+                    scroll_filter=qdrant_filter,
+                    limit=page_size,
+                    offset=next_page_token,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+            except Exception as exc:
+                raise self._wrap_qdrant_error(exc) from exc
+
+            for point in points:
+                yield dict(point.payload or {})
+                emitted += 1
+                if max_rows is not None and emitted >= max_rows:
+                    return
+
+            if next_page_token is None or not points:
+                return
 
     def upsert_yield_records(self, points: Iterable[StructuredPoint]) -> int:
         models = qc.models()

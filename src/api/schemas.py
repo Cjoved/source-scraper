@@ -210,6 +210,18 @@ class AgentMode(StrEnum):
     TASKLIST = "tasklist"
 
 
+class AgentUserType(StrEnum):
+    FARMER = "farmer"
+    DEVELOPER = "developer"
+    ADMIN = "admin"
+
+
+class AgentConfidence(StrEnum):
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
 class AgentChatMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -268,6 +280,22 @@ class AgentChatRequest(BaseModel):
     )
     conversation_id: Annotated[str | None, Field(max_length=128)] = None
     history: list[AgentChatMessage] = Field(default_factory=list, max_length=20)
+    user_type: AgentUserType = Field(
+        default=AgentUserType.FARMER,
+        description="Primary user profile for response style and routing defaults.",
+    )
+    location: Annotated[str | None, Field(max_length=200)] = Field(
+        default=None,
+        description="Optional farmer location such as province, municipality, or region.",
+    )
+    crop: Annotated[str | None, Field(max_length=100)] = Field(
+        default=None,
+        description="Optional crop context, e.g. palay or corn.",
+    )
+    language: Annotated[str | None, Field(max_length=50)] = Field(
+        default=None,
+        description="Optional response language hint; otherwise inferred from message.",
+    )
     source_ids: list[str] | None = Field(
         default=None,
         max_length=10,
@@ -282,6 +310,7 @@ class AgentChatResponse(BaseModel):
     tool_calls: list[AgentToolCall] = Field(default_factory=list)
     sources: list[AgentSource] = Field(default_factory=list)
     warnings: list[AgentWarning] = Field(default_factory=list)
+    confidence: AgentConfidence = AgentConfidence.LOW
     took_ms: float
 
 
