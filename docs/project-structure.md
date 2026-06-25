@@ -55,5 +55,6 @@ This is the canonical folder guide to avoid confusion when adding files.
 - `data/openstat_processed/` — OpenSTAT table CSV + `openstat_corpus.jsonl`
 - `data/philrice_processed/`, `data/pinoyrice_processed/`, `data/philrice_news_processed/`, `data/irri_processed/`
 - `data/manual_downloads/` — manual OpenSTAT Excel fallback
+- `data/releases/` — versioned release bundles (Phase 5; `YYYY-MM-DD/`)
 - other `data/*` outputs from scraper workflows
 
