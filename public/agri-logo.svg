@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 180" role="img" aria-label="AgriDataAgent">
+  <rect width="720" height="180" rx="36" fill="#052e16"/>
+  <circle cx="90" cy="90" r="52" fill="#22c55e"/>
+  <path d="M64 100c32-3 59-23 76-55 2 38-20 70-58 83-9 3-18-3-18-13v-15Z" fill="#ecfccb"/>
+  <path d="M110 58c-14 39-40 62-76 70 35 9 78-2 106-37 6-8 1-24-10-27l-20-6Z" fill="#16a34a"/>
+  <text x="170" y="78" fill="#f0fdf4" font-family="Segoe UI, Arial, sans-serif" font-size="44" font-weight="800">AgriDataAgent</text>
+  <text x="173" y="122" fill="#bbf7d0" font-family="Segoe UI, Arial, sans-serif" font-size="24">PRiSM � OpenSTAT � Agri Corpus</text>
+</svg>

@@ -1,0 +1,188 @@
+:root {
+  --agri-surface: rgba(22, 101, 52, 0.12);
+  --agri-border: rgba(34, 197, 94, 0.35);
+  --agri-primary: rgb(34, 197, 94);
+  --agri-primary-dark: rgb(22, 163, 74);
+  --loading-cursor-color: rgb(34, 197, 94);
+  --loading-cursor-size: 1.15rem;
+  --loading-cursor-animation: agri-breathe 1.15s ease-in-out infinite;
+  --stop-icon-color: rgb(187, 247, 208);
+  --stop-icon-animation: agri-stop-pulse 1s ease-in-out infinite;
+}
+
+[data-testid="chat-profile-card"],
+[data-testid="starter"] {
+  border: 1px solid var(--agri-border);
+  border-radius: 16px;
+}
+
+[data-testid="chat-profile-card"]:hover,
+[data-testid="starter"]:hover {
+  background: var(--agri-surface);
+}
+
+#welcome-screen {
+  gap: 1.25rem !important;
+}
+
+#welcome-screen > * {
+  order: 2;
+}
+
+#welcome-screen > div:first-child {
+  order: 1;
+  max-width: 720px;
+  text-align: center;
+}
+
+#welcome-screen > div:first-child img {
+  width: 136px !important;
+  height: 136px !important;
+  border-radius: 24px !important;
+  box-shadow: 0 18px 40px rgba(22, 101, 52, 0.18);
+}
+
+#welcome-screen > *:has([data-testid="starter"]),
+#welcome-screen > *:has(button:not(#chat-submit)):not(:has(#chat-input)):not(:has(#message-composer)) {
+  order: 2;
+  margin-bottom: 0.25rem;
+}
+
+#welcome-screen #message-composer {
+  order: 3 !important;
+}
+
+.bg-primary,
+button.bg-primary,
+[class*="bg-primary"] {
+  background: linear-gradient(135deg, var(--agri-primary), var(--agri-primary-dark)) !important;
+}
+
+.text-primary-foreground,
+[class*="text-primary-foreground"] {
+  color: #052e16 !important;
+}
+
+.markdown-body h3 {
+  margin-top: 1.2rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--agri-border);
+}
+
+.markdown-body blockquote {
+  border-left: 3px solid rgb(34, 197, 94);
+  color: inherit;
+  opacity: 0.88;
+}
+
+.markdown-body code {
+  border-radius: 6px;
+}
+
+[data-step-type="assistant_message"] .markdown-body,
+[class*="assistant" i] .markdown-body {
+  border-left: 2px solid rgba(34, 197, 94, 0.36);
+  padding-left: 0.7rem;
+}
+
+[data-step-type="user_message"] .bg-accent.rounded-3xl,
+[data-step-type="user_message"] [class*="bg-accent"][class*="rounded-3xl"] {
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.24), rgba(20, 184, 166, 0.16)) !important;
+  border: 1px solid rgba(34, 197, 94, 0.42);
+  box-shadow: 0 10px 24px rgba(22, 101, 52, 0.1);
+}
+
+.dark [data-step-type="user_message"] .bg-accent.rounded-3xl,
+.dark [data-step-type="user_message"] [class*="bg-accent"][class*="rounded-3xl"] {
+  background: linear-gradient(135deg, rgba(22, 101, 52, 0.72), rgba(6, 78, 59, 0.54)) !important;
+  border-color: rgba(34, 197, 94, 0.52);
+}
+
+#message-composer {
+  border: 1px solid rgba(34, 197, 94, 0.28) !important;
+  border-radius: 24px !important;
+  background: linear-gradient(135deg, rgba(240, 253, 244, 0.94), rgba(236, 253, 245, 0.86)) !important;
+  box-shadow: 0 18px 45px rgba(22, 101, 52, 0.12);
+}
+
+.dark #message-composer {
+  background: linear-gradient(135deg, rgba(5, 46, 22, 0.96), rgba(6, 78, 59, 0.9)) !important;
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.24);
+}
+
+#chat-input {
+  color: inherit;
+  caret-color: var(--agri-primary);
+  font-size: 1rem;
+}
+
+#chat-input::placeholder {
+  color: rgba(22, 101, 52, 0.74);
+}
+
+.dark #chat-input::placeholder {
+  color: rgba(220, 252, 231, 0.72);
+}
+
+#chat-submit {
+  background: linear-gradient(135deg, var(--agri-primary), var(--agri-primary-dark)) !important;
+  color: #052e16 !important;
+  border: 1px solid rgba(187, 247, 208, 0.55) !important;
+  box-shadow: 0 12px 26px rgba(34, 197, 94, 0.35);
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease,
+    filter 120ms ease;
+}
+
+#chat-submit:hover {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+  box-shadow: 0 14px 30px rgba(34, 197, 94, 0.42);
+}
+
+#chat-submit:disabled {
+  opacity: 0.55;
+  filter: grayscale(0.25);
+  box-shadow: none;
+}
+
+#chat-submit[aria-label*="stop" i],
+#chat-submit[title*="stop" i],
+#chat-submit:has([style*="--stop-icon"]),
+#chat-submit:has([class*="stop" i]) {
+  background: linear-gradient(135deg, rgb(22, 163, 74), rgb(5, 150, 105)) !important;
+  color: rgb(187, 247, 208) !important;
+  border-color: rgba(187, 247, 208, 0.7) !important;
+  box-shadow: 0 12px 28px rgba(34, 197, 94, 0.42);
+}
+
+#chat-submit svg,
+#chat-submit [class*="stop" i],
+#chat-submit [style*="--stop-icon"] {
+  color: rgb(187, 247, 208) !important;
+}
+
+@keyframes agri-stop-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(0.9);
+  }
+}
+
+@keyframes agri-breathe {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.82);
+  }
+}
