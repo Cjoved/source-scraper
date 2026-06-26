@@ -39,6 +39,7 @@ ALERT_FAILURE_MESSAGE_TEMPLATE = (
     "❌ {error_plain}\n"
     "{bullets_plain}"
     "{detail_block_plain}"
+    "{error_explanation_plain}"
     "\n"
     "⏱ {duration_human}  ·  {run_id}\n"
     "\n"
@@ -92,6 +93,7 @@ ALERT_FAILURE_TELEGRAM_TEMPLATE = (
     "❌ {error}\n"
     "{bullets_html}"
     "{detail_block_html}"
+    "{error_explanation_html}"
     "\n"
     "⏱ <code>{duration_human}</code>  ·  <code>{run_id}</code>\n"
     "\n"
@@ -427,6 +429,40 @@ def _detail_block(ctx: RunContext) -> tuple[str, str]:
     return plain, html
 
 
+def _error_explanation_blocks(ctx: RunContext) -> tuple[str, str]:
+    if _alert_kind(ctx) != "failure" or not ctx.error_explanation:
+        return "", ""
+
+    explanation = ctx.error_explanation
+    summary = str(explanation.get("summary") or "").strip()
+    cause = str(explanation.get("likely_cause") or "").strip()
+    actions = [
+        str(action).strip()
+        for action in explanation.get("suggested_actions", [])
+        if str(action).strip()
+    ][:3]
+    if not summary and not cause and not actions:
+        return "", ""
+
+    generated_by = str(explanation.get("generated_by") or "fallback").strip()
+    title = "🧠 AI explanation" if generated_by == "ai" else "🧠 Error explanation"
+    plain_lines = [f"\n{title}"]
+    html_lines = [f"\n<b>{escape(title)}</b>"]
+    if summary:
+        plain_lines.append(f"Why: {summary}")
+        html_lines.append(f"Why: {escape(summary)}")
+    if cause:
+        plain_lines.append(f"Cause: {cause}")
+        html_lines.append(f"Cause: {escape(cause)}")
+    if actions:
+        plain_lines.append("Next steps:")
+        html_lines.append("Next steps:")
+        for action in actions:
+            plain_lines.append(f"- {action}")
+            html_lines.append(f"• {escape(action)}")
+    return "\n".join(plain_lines) + "\n", "\n".join(html_lines) + "\n"
+
+
 def _message_templates(ctx: RunContext) -> tuple[str, str]:
     kind = _alert_kind(ctx)
     if kind == "success":
@@ -487,6 +523,7 @@ def _alert_template_values(ctx: RunContext) -> dict[str, str]:
     bullets_plain = _output_bullets(ctx)
     bullets_html = escape(bullets_plain.rstrip("\n")) + ("\n" if bullets_plain else "")
     detail_block_plain, detail_block_html = _detail_block(ctx)
+    error_explanation_plain, error_explanation_html = _error_explanation_blocks(ctx)
     return {
         "brand_title": ALERT_BRAND_TITLE,
         "brand_subtitle": ALERT_BRAND_SUBTITLE,
@@ -514,6 +551,8 @@ def _alert_template_values(ctx: RunContext) -> dict[str, str]:
         "error_detail_plain": detail_plain,
         "detail_block_plain": detail_block_plain,
         "detail_block_html": detail_block_html,
+        "error_explanation_plain": error_explanation_plain,
+        "error_explanation_html": error_explanation_html,
         "error_type": error_type,
         "manifest": str(ctx.manifest_path),
         "manifest_short": _run_artifact_path(ctx, "manifest.json"),
@@ -580,6 +619,7 @@ def _alert_payload(ctx: RunContext) -> dict[str, object]:
         "job_id": ctx.job_id,
         "status": ctx.status,
         "error": ctx.error,
+        "error_explanation": ctx.error_explanation,
         "warnings": ctx.warnings,
         "manifest_path": str(ctx.manifest_path),
         "duration_seconds": ctx.duration_seconds,
@@ -722,6 +762,30 @@ def _discord_embed_fields(ctx: RunContext, values: dict[str, str]) -> list[dict[
                 "inline": False,
             }
         )
+    if _alert_kind(ctx) == "failure" and ctx.error_explanation:
+        explanation = ctx.error_explanation
+        actions = [
+            str(action).strip()
+            for action in explanation.get("suggested_actions", [])
+            if str(action).strip()
+        ][:3]
+        body_lines = [
+            str(explanation.get("summary") or "").strip(),
+            str(explanation.get("likely_cause") or "").strip(),
+        ]
+        if actions:
+            body_lines.append("Next steps:")
+            body_lines.extend(f"- {action}" for action in actions)
+        body = "\n".join(line for line in body_lines if line).strip()
+        if body:
+            generated_by = str(explanation.get("generated_by") or "fallback")
+            fields.append(
+                {
+                    "name": "🧠 AI Explanation" if generated_by == "ai" else "🧠 Error Explanation",
+                    "value": body[:1024],
+                    "inline": False,
+                }
+            )
     fields.append(
         {"name": "📄 Manifest", "value": f"`{values['manifest_short']}`", "inline": False}
     )
@@ -936,6 +1000,21 @@ def send_test_alerts(
                 exc=exc,
                 error_type="JobError",
             )
+
+    if ctx.status == "failed" and not ctx.error_explanation:
+        ctx.set_error_explanation(
+            {
+                "summary": "TEST ONLY: sample AI explanation for alert layout verification.",
+                "likely_cause": "This simulated alert shows where real scraper failure explanations will appear.",
+                "suggested_actions": [
+                    "Check that this explanation appears in Telegram and Discord.",
+                    "For real failures, open manifest.json and follow the generated next steps.",
+                    f"Retry command format: {_retry_command(job_id)}",
+                ],
+                "generated_by": "ai",
+                "model": "test-alert-sample",
+            }
+        )
 
     if not alerts_enabled():
         return ["skipped: ALERT_ENABLED is not true"]

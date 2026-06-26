@@ -6,6 +6,7 @@ import time
 import traceback
 from collections.abc import Callable
 from datetime import datetime
+from typing import Any
 
 from rich.console import Console
 
@@ -75,6 +76,20 @@ _RUNNERS: dict[str, Callable[[], object]] = {
 }
 
 
+def _attach_error_explanation(ctx: RunContext, log: Any) -> None:
+    """Best-effort AI/fallback explanation for failed run alerts."""
+    try:
+        from src.agent.error_explainer import explain_run_failure
+
+        explanation = explain_run_failure(ctx)
+        ctx.set_error_explanation(explanation.to_dict())
+        if hasattr(log, "info"):
+            log.info("job.error_explained", generated_by=explanation.generated_by)
+    except Exception as exc:
+        if hasattr(log, "warning"):
+            log.warning("job.error_explanation_failed", error=str(exc))
+
+
 def validate_config(config: OrchestratorConfig) -> None:
     yaml_ids = {j.id for j in config.jobs}
     for job_id in JOB_ORDER:
@@ -129,6 +144,7 @@ def run_job(job_id: str, config: OrchestratorConfig | None = None) -> bool:
                 console.print(f"[red]{msg}[/red]")
                 ctx.mark_failed(message=msg, error_type="PreflightError")
                 log.error("job.preflight_failed", component="flaresolverr")
+                _attach_error_explanation(ctx, log)
                 send_run_alert(ctx)
                 return False
 
@@ -138,6 +154,7 @@ def run_job(job_id: str, config: OrchestratorConfig | None = None) -> bool:
                 console.print(f"[red]{msg}[/red]")
                 ctx.mark_failed(message=msg, error_type="PreflightError")
                 log.error("job.preflight_failed", component="qdrant")
+                _attach_error_explanation(ctx, log)
                 send_run_alert(ctx)
                 return False
 
@@ -190,6 +207,7 @@ def run_job(job_id: str, config: OrchestratorConfig | None = None) -> bool:
                         error_type="ValidationError",
                     )
                     log.error("validation.failed")
+                    _attach_error_explanation(ctx, log)
                     send_run_alert(ctx)
                     return False
             else:
@@ -212,6 +230,7 @@ def run_job(job_id: str, config: OrchestratorConfig | None = None) -> bool:
                     log.error("wasabi.backup_failed", error=str(exc))
                     if backup_fail_job():
                         ctx.mark_failed(message=msg, error_type="WasabiBackupError")
+                        _attach_error_explanation(ctx, log)
                         send_run_alert(ctx)
                         return False
                     ctx.add_warning(msg)
@@ -231,6 +250,7 @@ def run_job(job_id: str, config: OrchestratorConfig | None = None) -> bool:
                     log.error("wasabi.qdrant_backup_failed", error=str(exc))
                     if backup_fail_job():
                         ctx.mark_failed(message=msg, error_type="WasabiBackupError")
+                        _attach_error_explanation(ctx, log)
                         send_run_alert(ctx)
                         return False
                     ctx.add_warning(msg)
@@ -245,6 +265,7 @@ def run_job(job_id: str, config: OrchestratorConfig | None = None) -> bool:
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
             ctx.mark_failed(message=str(exc), exc=exc)
             log.exception("job.failed")
+            _attach_error_explanation(ctx, log)
             send_run_alert(ctx)
             return False
         finally:

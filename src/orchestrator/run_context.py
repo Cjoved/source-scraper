@@ -51,6 +51,7 @@ class RunContext:
     corpus_index: dict[str, Any] | None = None
     wasabi_backup: list[dict[str, str]] | None = None
     skip_reason: str | None = None
+    error_explanation: dict[str, Any] | None = None
 
     @classmethod
     def start(
@@ -131,6 +132,10 @@ class RunContext:
         self.wasabi_backup = uploads
         self._write_manifest()
 
+    def set_error_explanation(self, explanation: dict[str, Any]) -> None:
+        self.error_explanation = explanation
+        self._write_manifest()
+
     def _finish(self) -> None:
         self.ended_at = datetime.now(UTC)
         self.duration_seconds = round(
@@ -194,6 +199,8 @@ class RunContext:
             payload["wasabi_backup"] = self.wasabi_backup
         if self.error:
             payload["error"] = self.error
+        if self.error_explanation:
+            payload["error_explanation"] = self.error_explanation
         return payload
 
     def _write_manifest(self) -> None:
