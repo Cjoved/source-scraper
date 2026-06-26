@@ -182,6 +182,8 @@ class AlertsTests(unittest.TestCase):
         text = telegram_payloads[0]["text"]
         self.assertIn("JOB FAILED", text)
         self.assertNotIn("TEST ALERT", text)
+        self.assertIn("AI explanation", text)
+        self.assertIn("sample AI explanation", text)
 
     def test_alert_includes_traceback_tail(self) -> None:
         ctx = _failed_ctx()
@@ -198,6 +200,28 @@ class AlertsTests(unittest.TestCase):
         self.assertIn("Agent Scraper", text)
         self.assertIn("🌾 PhilRice", text)
         self.assertIn("🔁", text)
+
+    def test_alerts_include_error_explanation(self) -> None:
+        ctx = _failed_ctx()
+        ctx.set_error_explanation(
+            {
+                "summary": "Hindi maabot ang source site.",
+                "likely_cause": "Temporary network or anti-bot service issue.",
+                "suggested_actions": ["Check service health", "Retry the orchestrator job"],
+                "generated_by": "ai",
+                "model": "deepseek-chat",
+            }
+        )
+
+        text = _alert_message(ctx)
+        self.assertIn("AI explanation", text)
+        self.assertIn("Hindi maabot ang source site", text)
+        self.assertIn("Retry the orchestrator job", text)
+
+        embed = _build_discord_payload(ctx)["embeds"][0]
+        fields = embed["fields"]
+        names = [field["name"] for field in fields]
+        self.assertIn("🧠 AI Explanation", names)
 
 
 if __name__ == "__main__":

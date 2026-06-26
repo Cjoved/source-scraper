@@ -85,6 +85,37 @@ class RunJobTests(unittest.TestCase):
         ]
         self.assertEqual(called_ids, enabled_order)
 
+    @patch("src.orchestrator.jobs.send_run_alert")
+    @patch("src.agent.error_explainer.explain_run_failure")
+    @patch.dict(
+        "src.orchestrator.jobs._RUNNERS",
+        {"prism_yield": mock.MagicMock(side_effect=RuntimeError("boom"))},
+        clear=False,
+    )
+    def test_run_job_attaches_error_explanation_before_alert(
+        self,
+        mock_explain: mock.MagicMock,
+        mock_alert: mock.MagicMock,
+    ) -> None:
+        from src.agent.error_explainer import ErrorExplanation
+
+        mock_explain.return_value = ErrorExplanation(
+            summary="The scraper crashed.",
+            likely_cause="Runtime error during the job.",
+            suggested_actions=["Inspect manifest", "Retry after fixing the cause"],
+            generated_by="ai",
+            model="deepseek-chat",
+        )
+
+        cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
+        self.assertFalse(run_job("prism_yield", cfg))
+
+        mock_alert.assert_called_once()
+        alert_ctx = mock_alert.call_args.args[0]
+        self.assertIsNotNone(alert_ctx.error_explanation)
+        self.assertEqual(alert_ctx.error_explanation["summary"], "The scraper crashed.")
+        self.assertEqual(alert_ctx.error_explanation["generated_by"], "ai")
+
 
 class CliParserTests(unittest.TestCase):
     def test_run_mutually_exclusive(self) -> None:
@@ -175,9 +206,13 @@ class PreflightTests(unittest.TestCase):
 
 class OpenstatPreflightJobTests(unittest.TestCase):
     @patch("src.orchestrator.jobs.send_run_alert")
+    @patch("src.orchestrator.jobs._attach_error_explanation")
     @patch("src.orchestrator.jobs.ensure_flaresolverr", return_value=False)
     def test_openstat_fails_when_flaresolverr_down(
-        self, _mock_ensure: mock.MagicMock, _mock_alert: mock.MagicMock
+        self,
+        _mock_ensure: mock.MagicMock,
+        _mock_explain: mock.MagicMock,
+        _mock_alert: mock.MagicMock,
     ) -> None:
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
         self.assertFalse(run_job("openstat", cfg))
@@ -232,11 +267,13 @@ class BrowserLockJobTests(unittest.TestCase):
 
 class CorpusValidationHookTests(unittest.TestCase):
     @patch("src.orchestrator.jobs.send_run_alert")
+    @patch("src.orchestrator.jobs._attach_error_explanation")
     @patch("src.orchestrator.jobs.validate_job_corpora", return_value=_validation_fail())
     @patch.dict("src.orchestrator.jobs._RUNNERS", {"philrice": mock.MagicMock()}, clear=False)
     def test_run_job_fails_when_corpus_invalid(
         self,
         mock_validate: mock.MagicMock,
+        _mock_explain: mock.MagicMock,
         _mock_alert: mock.MagicMock,
     ) -> None:
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
@@ -259,9 +296,13 @@ class CorpusValidationHookTests(unittest.TestCase):
 
 class CorpusRagIndexJobTests(unittest.TestCase):
     @patch("src.orchestrator.jobs.send_run_alert")
+    @patch("src.orchestrator.jobs._attach_error_explanation")
     @patch("src.orchestrator.jobs.ensure_qdrant", return_value=False)
     def test_corpus_rag_index_fails_when_qdrant_down(
-        self, _mock_ensure: mock.MagicMock, _mock_alert: mock.MagicMock
+        self,
+        _mock_ensure: mock.MagicMock,
+        _mock_explain: mock.MagicMock,
+        _mock_alert: mock.MagicMock,
     ) -> None:
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
         self.assertFalse(run_job("corpus_rag_index", cfg))
@@ -289,9 +330,13 @@ class CorpusRagIndexJobTests(unittest.TestCase):
 
 class OpenstatIndexJobTests(unittest.TestCase):
     @patch("src.orchestrator.jobs.send_run_alert")
+    @patch("src.orchestrator.jobs._attach_error_explanation")
     @patch("src.orchestrator.jobs.ensure_qdrant", return_value=False)
     def test_openstat_index_fails_when_qdrant_down(
-        self, _mock_ensure: mock.MagicMock, _mock_alert: mock.MagicMock
+        self,
+        _mock_ensure: mock.MagicMock,
+        _mock_explain: mock.MagicMock,
+        _mock_alert: mock.MagicMock,
     ) -> None:
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
         self.assertFalse(run_job("openstat_index", cfg))
@@ -319,9 +364,13 @@ class OpenstatIndexJobTests(unittest.TestCase):
 
 class PrismIndexJobTests(unittest.TestCase):
     @patch("src.orchestrator.jobs.send_run_alert")
+    @patch("src.orchestrator.jobs._attach_error_explanation")
     @patch("src.orchestrator.jobs.ensure_qdrant", return_value=False)
     def test_prism_index_fails_when_qdrant_down(
-        self, _mock_ensure: mock.MagicMock, _mock_alert: mock.MagicMock
+        self,
+        _mock_ensure: mock.MagicMock,
+        _mock_explain: mock.MagicMock,
+        _mock_alert: mock.MagicMock,
     ) -> None:
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
         self.assertFalse(run_job("prism_index", cfg))

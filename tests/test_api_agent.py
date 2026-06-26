@@ -46,6 +46,40 @@ class TestAgentRoute(unittest.TestCase):
         self.assertEqual(resp.status_code, 422)
         self.assertEqual(resp.json()["error"]["code"], "VALIDATION_ERROR")
 
+    def test_agent_chat_rejects_long_message(self) -> None:
+        client, _fake = make_client()
+        resp = client.post("/v1/agent/chat", json={"message": "x" * 4001, "mode": "chat"})
+
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["error"]["code"], "VALIDATION_ERROR")
+
+    def test_agent_chat_rejects_invalid_mode(self) -> None:
+        client, _fake = make_client()
+        resp = client.post("/v1/agent/chat", json={"message": "hello", "mode": "data"})
+
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["error"]["code"], "VALIDATION_ERROR")
+
+    def test_agent_chat_rejects_too_many_source_ids(self) -> None:
+        client, _fake = make_client()
+        resp = client.post(
+            "/v1/agent/chat",
+            json={"message": "latest news", "mode": "chat", "source_ids": [f"source_{idx}" for idx in range(11)]},
+        )
+
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["error"]["code"], "VALIDATION_ERROR")
+
+    def test_agent_chat_rejects_non_string_source_id(self) -> None:
+        client, _fake = make_client()
+        resp = client.post(
+            "/v1/agent/chat",
+            json={"message": "latest news", "mode": "chat", "source_ids": ["irri", 123]},
+        )
+
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["error"]["code"], "VALIDATION_ERROR")
+
 
 if __name__ == "__main__":
     unittest.main()
