@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import re
 from datetime import date
 from typing import Any, Literal
+from urllib.parse import quote_plus
 
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
@@ -110,11 +111,26 @@ def _semester(value: int | None) -> SemesterCode | None:
     return SemesterCode(value) if value in (1, 2) else None
 
 
+def _fallback_source_url(payload: dict[str, Any]) -> str | None:
+    source_id = str(payload.get("source_id") or "").lower()
+    title = _string_or_none(payload.get("title"))
+    filename = _string_or_none(payload.get("filename"))
+    query = title or filename
+    if not query:
+        return None
+    if source_id == "pinoyrice":
+        return f"https://www.pinoyrice.com/?s={quote_plus(query)}"
+    if source_id == "philrice":
+        return f"https://www.philrice.gov.ph/?s={quote_plus(query)}"
+    return None
+
+
 def _source_from_payload(payload: dict[str, Any], *, source_id: str) -> AgentSource:
+    url = _string_or_none(payload.get("url") or payload.get("pdf_url") or payload.get("source_url"))
     return AgentSource(
         source_id=_string_or_none(payload.get("source_id")) or source_id,
         title=_string_or_none(payload.get("title")),
-        url=_string_or_none(payload.get("url")),
+        url=url or _fallback_source_url(payload),
         filename=_string_or_none(payload.get("filename")),
         page=_int_or_none(payload.get("page")),
         snippet=_snippet(payload.get("text") or payload),
@@ -231,6 +247,27 @@ def _sort_corpus_hits(hits: list[Any], sort_by: str) -> list[Any]:
     )
 
 
+def _corpus_document_key(payload: dict[str, Any]) -> tuple[str, str]:
+    source_id = str(payload.get("source_id") or "").strip().lower()
+    for field in ("title", "url", "pdf_url", "source_url", "doc_id", "filename"):
+        value = str(payload.get(field) or "").strip().lower()
+        if value:
+            return source_id, value
+    return source_id, _snippet(payload)
+
+
+def _dedupe_corpus_documents(hits: list[KnowledgeHitRecord]) -> list[KnowledgeHitRecord]:
+    seen: set[tuple[str, str]] = set()
+    deduped: list[KnowledgeHitRecord] = []
+    for hit in hits:
+        key = _corpus_document_key(hit.payload)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(hit)
+    return deduped
+
+
 def _latest_corpus_hits(
     ctx: ToolExecutionContext,
     *,
@@ -249,7 +286,7 @@ def _latest_corpus_hits(
         if papers_requested and not _paper_like_payload(payload):
             continue
         candidates.append(KnowledgeHitRecord(score=1.0, payload=payload))
-    return _sort_corpus_hits(candidates, "latest")[:limit]
+    return _dedupe_corpus_documents(_sort_corpus_hits(candidates, "latest"))[:limit]
 
 
 def _search_corpus_impl(

@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from langchain_core.messages import BaseMessage, ToolMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -46,7 +46,6 @@ SEVERE_WARNING_CODES = {
     "no_results",
 }
 
-
 class AgentModelOutput(BaseModel):
     """Strict model-facing output contract for Phase 2."""
 
@@ -61,6 +60,20 @@ class ParsedModelOutput:
     answer: str
     tasklist: list[AgentTask]
     warnings: list[AgentWarning]
+
+
+class SourceGroundingDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    index: int = Field(ge=1)
+    relevant: bool
+    reason: str = Field(default="", max_length=300)
+
+
+class SourceGroundingOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decisions: list[SourceGroundingDecision]
 
 
 def _resolve_mode(body: AgentChatRequest, settings: Settings) -> AgentMode:
@@ -101,6 +114,41 @@ def _strip_code_fence(raw: str) -> str:
     return match.group(1).strip() if match else text
 
 
+def _extract_json_payload(raw: str) -> str:
+    text = _strip_code_fence(raw).strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        return fenced.group(1).strip()
+    if text.startswith("{"):
+        return text
+
+    start = text.find("{")
+    if start < 0:
+        return text
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text[start:], start=start):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1].strip()
+    return text
+
+
 def _warning(code: str, message: str) -> AgentWarning:
     return AgentWarning(code=code, message=message)
 
@@ -109,7 +157,7 @@ def _parse_model_output(raw: str, *, mode: AgentMode, body: AgentChatRequest) ->
     text = _strip_code_fence(raw).strip()
     warnings: list[AgentWarning] = []
     try:
-        data = json.loads(text)
+        data = json.loads(_extract_json_payload(text))
         output = AgentModelOutput.model_validate(data)
         tasklist = output.tasklist
         if mode is AgentMode.TASKLIST and not tasklist:
@@ -189,6 +237,181 @@ def _confidence(
     if sources and any(call.name in SEARCH_TOOLS and call.result_count > 0 for call in tool_calls):
         return AgentConfidence.MEDIUM
     return AgentConfidence.LOW
+
+
+def _source_matches_hard_scope(source: AgentSource, plan: AgentQueryPlan) -> bool:
+    if plan.source_ids and source.source_id not in plan.source_ids:
+        return False
+    if plan.intent == "news_query":
+        if source.source_id not in {"philrice_news", "irri"}:
+            return False
+        if source.page is not None and source.source_id == "irri":
+            return False
+    if plan.intent == "paper_query" and source.source_id not in {"philrice", "pinoyrice"}:
+        return False
+    return True
+
+
+def _source_grounding_prompt(
+    *,
+    body: AgentChatRequest,
+    query_plan: AgentQueryPlan,
+    answer: str,
+    sources: list[AgentSource],
+) -> str:
+    source_payload = [
+        {
+            "index": index,
+            "source_id": source.source_id,
+            "title": source.title,
+            "url": source.url,
+            "filename": source.filename,
+            "page": source.page,
+            "snippet": source.snippet,
+        }
+        for index, source in enumerate(sources, start=1)
+    ]
+    payload = {
+        "user_question": body.message,
+        "query_intent": query_plan.intent,
+        "planned_source_ids": query_plan.source_ids,
+        "draft_answer": answer,
+        "candidate_sources": source_payload,
+    }
+    return (
+        "Verify which candidate sources are relevant citations for the user's question and draft answer.\n"
+        "Return only strict JSON with this shape:\n"
+        '{"decisions":[{"index":1,"relevant":true,"reason":"short reason"}]}\n'
+        "Rules:\n"
+        "- Mark relevant=true only if the source directly supports the question or draft answer.\n"
+        "- Mark relevant=false for sources that merely share generic agriculture/rice terms.\n"
+        "- For broad latest/listing requests, a source may be relevant as a candidate item "
+        "if it matches the requested source family, even when the word latest/news/paper is absent.\n"
+        "- Do not require exact wording; judge semantic relevance.\n"
+        "- Return one decision for every candidate source index.\n\n"
+        f"{json.dumps(payload, ensure_ascii=False, default=str)}"
+    )
+
+
+def _verify_sources_with_ai(
+    model: Any,
+    *,
+    body: AgentChatRequest,
+    query_plan: AgentQueryPlan,
+    answer: str,
+    sources: list[AgentSource],
+) -> list[AgentSource] | None:
+    if not sources:
+        return []
+    try:
+        response = model.invoke(
+            [
+                SystemMessage(
+                    content=(
+                        "You are a strict source-grounding verifier for an agricultural data agent. "
+                        "You do not answer the user. You only validate candidate citations."
+                    )
+                ),
+                HumanMessage(
+                    content=_source_grounding_prompt(
+                        body=body,
+                        query_plan=query_plan,
+                        answer=answer,
+                        sources=sources,
+                    )
+                ),
+            ]
+        )
+        raw = _content_to_text(getattr(response, "content", response))
+        data = json.loads(_strip_code_fence(raw))
+        parsed = SourceGroundingOutput.model_validate(data)
+    except Exception:
+        return None
+
+    source_by_index = {index: source for index, source in enumerate(sources, start=1)}
+    keep_indexes = {
+        decision.index
+        for decision in parsed.decisions
+        if decision.relevant and decision.index in source_by_index
+    }
+    return [source for index, source in source_by_index.items() if index in keep_indexes]
+
+
+def _is_source_discovery_query(body: AgentChatRequest, query_plan: AgentQueryPlan) -> bool:
+    if query_plan.intent not in {"news_query", "paper_query"}:
+        return False
+    text = body.message.lower()
+    discovery_markers = (
+        "latest",
+        "newest",
+        "recent",
+        "pinaka",
+        "pinakabago",
+        "bago",
+        "bagong",
+        "meron",
+        "available",
+    )
+    return any(marker in text for marker in discovery_markers)
+
+
+def _ground_sources(
+    sources: list[AgentSource],
+    *,
+    body: AgentChatRequest,
+    query_plan: AgentQueryPlan,
+    answer: str,
+    model: Any,
+    warnings: list[AgentWarning],
+) -> list[AgentSource]:
+    if not sources:
+        return []
+    scoped = [source for source in sources if _source_matches_hard_scope(source, query_plan)]
+    verified = _verify_sources_with_ai(
+        model,
+        body=body,
+        query_plan=query_plan,
+        answer=answer,
+        sources=scoped,
+    )
+    grounded = scoped if verified is None else verified
+    if verified == [] and scoped and _is_source_discovery_query(body, query_plan):
+        grounded = scoped
+    if len(grounded) < len(sources) and not _has_warning(warnings, "source_relevance_low"):
+        warnings.append(
+            _warning(
+                "source_relevance_low",
+                (
+                    "Some retrieved sources were removed because the grounding verifier "
+                    "or source-scope guard judged them not relevant enough to cite."
+                ),
+            )
+        )
+    return grounded
+
+
+def _maybe_ungrounded_answer(
+    answer: str,
+    *,
+    tool_calls: list[AgentToolCall],
+    sources: list[AgentSource],
+    warnings: list[AgentWarning],
+) -> str:
+    if sources:
+        return answer
+    if any(call.name == "search_corpus" and call.result_count > 0 for call in tool_calls):
+        if not _has_warning(warnings, "source_relevance_low"):
+            warnings.append(
+                _warning(
+                    "source_relevance_low",
+                    "Retrieved corpus results were not relevant enough to cite as sources.",
+                )
+            )
+        return (
+            "May nahanap na corpus records, pero hindi sapat ang match sa tanong para gamitin "
+            "bilang source. Subukan magbigay ng mas specific na topic o source."
+        )
+    return answer
 
 
 def _tool_cache_key(name: str, args: dict[str, Any]) -> str:
@@ -753,15 +976,32 @@ def run_agent_chat(
             sources=_dedupe_sources(sources),
         )
 
+    grounded_sources = _dedupe_sources(
+        _ground_sources(
+            sources,
+            body=body,
+            query_plan=query_plan,
+            answer=parsed.answer,
+            model=model,
+            warnings=warnings,
+        )
+    )
+    answer = _maybe_ungrounded_answer(
+        parsed.answer,
+        tool_calls=tool_call_records,
+        sources=grounded_sources,
+        warnings=warnings,
+    )
+
     return AgentChatResponse(
-        answer=parsed.answer,
+        answer=answer,
         tasklist=parsed.tasklist if mode == AgentMode.TASKLIST else [],
         tool_calls=tool_call_records,
-        sources=_dedupe_sources(sources),
+        sources=grounded_sources,
         warnings=warnings,
         confidence=_confidence(
             tool_calls=tool_call_records,
-            sources=_dedupe_sources(sources),
+            sources=grounded_sources,
             warnings=warnings,
         ),
         took_ms=round((time.perf_counter() - started) * 1000, 2),

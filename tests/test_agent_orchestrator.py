@@ -159,6 +159,25 @@ class TestAgentOrchestrator(unittest.TestCase):
         self.assertTrue(response.tasklist)
         self.assertEqual(response.warnings[0].code, "model_response_plain_text")
 
+    def test_embedded_json_model_response_is_parsed(self) -> None:
+        model = FakeModel(
+            """
+            Narito ang sagot.
+
+            ```json
+            {"answer": "Clean answer from embedded JSON.", "tasklist": []}
+            ```
+            """
+        )
+        with patch("src.agent.orchestrator.create_chat_model", return_value=model):
+            response = run_agent_chat(
+                AgentChatRequest(message="Kamusta?", mode=AgentMode.CHAT),
+                _settings(),
+            )
+
+        self.assertEqual(response.answer, "Clean answer from embedded JSON.")
+        self.assertEqual(response.warnings, [])
+
     def test_timeout_returns_specific_warning(self) -> None:
         with patch("src.agent.orchestrator.create_chat_model", return_value=TimeoutModel()):
             response = run_agent_chat(
@@ -401,6 +420,58 @@ class TestAgentOrchestrator(unittest.TestCase):
         self.assertEqual(response.sources[0].source_id, "philrice_news")
         self.assertEqual(response.sources[0].title, "Hybrid seeds update")
         self.assertEqual(response.confidence, AgentConfidence.MEDIUM)
+
+    def test_corpus_sources_are_filtered_by_query_relevance(self) -> None:
+        store = FakeQdrantStore()
+        store.seed_corpus(
+            [
+                {
+                    "source_id": "philrice_news",
+                    "doc_id": "hybrid",
+                    "title": "Hybrid seeds update",
+                    "text": "Hybrid seeds improve palay production.",
+                },
+                {
+                    "source_id": "philrice_news",
+                    "doc_id": "unrelated",
+                    "title": "Office activity",
+                    "text": "Staff event and office announcement.",
+                },
+            ]
+        )
+        model = ToolCallingModel(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_1",
+                            "name": "search_corpus",
+                            "args": {"query": "hybrid seeds", "source_ids": ["philrice_news"], "limit": 5},
+                        }
+                    ],
+                ),
+                FakeMessage('{"answer": "May update tungkol sa hybrid seeds.", "tasklist": []}'),
+                FakeMessage(
+                    '{"decisions":['
+                    '{"index":1,"relevant":true,"reason":"Hybrid seeds source supports the question."},'
+                    '{"index":2,"relevant":false,"reason":"Office activity does not answer hybrid seeds."}'
+                    "]}"
+                ),
+            ]
+        )
+
+        with patch("src.agent.orchestrator.create_chat_model", return_value=model):
+            response = run_agent_chat(
+                AgentChatRequest(message="May balita ba tungkol sa hybrid seeds?", mode=AgentMode.CHAT),
+                _settings(),
+                store=store,
+            )
+
+        titles = {source.title for source in response.sources}
+        self.assertIn("Hybrid seeds update", titles)
+        self.assertNotIn("Office activity", titles)
+        self.assertTrue(any(warning.code == "source_relevance_low" for warning in response.warnings))
 
     def test_latest_corpus_request_injects_scope_and_latest_sort(self) -> None:
         store = FakeQdrantStore()
@@ -706,6 +777,14 @@ class TestAgentOrchestrator(unittest.TestCase):
                     "filename": "pinoyrice_publication_2026-05-15.pdf",
                     "text": "Farmer publication about palay production.",
                 },
+                {
+                    "source_id": "pinoyrice",
+                    "doc_id": "pinoyrice-guide",
+                    "title": "PinoyRice production guide",
+                    "filename": "pinoyrice_publication_2026-05-15.pdf",
+                    "page": 2,
+                    "text": "Second page from the same publication.",
+                },
             ]
         )
         model = ToolCallingModel(
@@ -721,6 +800,12 @@ class TestAgentOrchestrator(unittest.TestCase):
                     ],
                 ),
                 FakeMessage('{"answer": "May latest papers mula PhilRice at PinoyRice.", "tasklist": []}'),
+                FakeMessage(
+                    '{"decisions":['
+                    '{"index":1,"relevant":false,"reason":"Generic latest papers query."},'
+                    '{"index":2,"relevant":false,"reason":"Generic latest papers query."}'
+                    "]}"
+                ),
             ]
         )
 
@@ -738,7 +823,19 @@ class TestAgentOrchestrator(unittest.TestCase):
         tool_payload = json.loads(str(tool_message.content))
         hits = tool_payload["payload"]["hits"]
         self.assertEqual({hit["source_id"] for hit in hits}, {"philrice", "pinoyrice"})
+        self.assertEqual(
+            sum(1 for hit in hits if hit["title"] == "PinoyRice production guide"),
+            1,
+        )
+        self.assertTrue(response.sources)
         self.assertNotIn("irri", {source.source_id for source in response.sources})
+        self.assertTrue(all(source.url for source in response.sources))
+        self.assertTrue(
+            any(
+                source.source_id == "pinoyrice" and "pinoyrice.com/?s=" in str(source.url)
+                for source in response.sources
+            )
+        )
 
     def test_farmer_advisory_without_crop_adds_one_clarification_context(self) -> None:
         model = FakeModel(
