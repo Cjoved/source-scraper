@@ -256,3 +256,10 @@ data/prism_txt/*
 data/screenshots/
 tmp_check.txt
 data/tmp_dbg.txt
+
+# Local automation planning artifacts
+AUTOMATION_ROADMAP.md
+AUTOMATION_SCHEDULE.tsv
+AUTOMATION_TASKLIST.tsv
+AUTOMATION_TASKLIST.txt
+AI_AGENT_IMPLEMENTATION_PLAN.md
