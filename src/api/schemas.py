@@ -279,6 +279,7 @@ class AgentChatRequest(BaseModel):
         description="Optional response mode. Defaults to AGENT_DEFAULT_MODE.",
     )
     conversation_id: Annotated[str | None, Field(max_length=128)] = None
+    session_id: Annotated[str | None, Field(max_length=128)] = None
     history: list[AgentChatMessage] = Field(default_factory=list, max_length=20)
     user_type: AgentUserType = Field(
         default=AgentUserType.FARMER,

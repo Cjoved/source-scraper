@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     api_keys_admin: str = Field(default="")
     api_auth_disabled: bool = Field(default=False)
 
+    jwt_auth_enabled: bool = Field(default=False)
+    jwt_required_for_agent: bool = Field(default=False)
+    jwt_secret: str = Field(default="")
+    jwt_algorithm: str = Field(default="HS256")
+    jwt_issuer: str = Field(default="")
+    jwt_audience: str = Field(default="")
+
     rate_limit_read: str = Field(default="120/minute")
     rate_limit_search: str = Field(default="30/minute")
     rate_limit_export: str = Field(default="5/minute")
@@ -87,6 +94,15 @@ class Settings(BaseSettings):
         allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
         if normalized not in allowed:
             raise ValueError(f"api_log_level must be one of {sorted(allowed)}")
+        return normalized
+
+    @field_validator("jwt_algorithm")
+    @classmethod
+    def _normalize_jwt_algorithm(cls, value: str) -> str:
+        normalized = value.upper().strip()
+        allowed = {"HS256"}
+        if normalized not in allowed:
+            raise ValueError(f"jwt_algorithm must be one of {sorted(allowed)}")
         return normalized
 
     @field_validator("hybrid_fusion")
