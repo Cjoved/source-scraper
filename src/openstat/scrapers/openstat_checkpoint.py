@@ -15,6 +15,20 @@ TABLE_COLUMNS = ["Geolocation", "Commodity Type", "Commodity", "Year", "Month", 
 SOURCE_URL_COLUMN = "Source URL"
 DEDUP_COLUMNS = ["Geolocation", "Commodity", "Year", "Month"]
 
+DEFAULT_OPENSTAT_URLS = [
+    "https://openstat.psa.gov.ph/PXWeb/pxweb/en/DB/DB__2M__NFG/0032M4AFN01.px/",
+    "https://openstat.psa.gov.ph/PXWeb/pxweb/en/DB/DB__2M__2018/0042M4ARA01.px/table/tableViewLayout1/",
+    "https://openstat.psa.gov.ph/PXWeb/pxweb/en/DB/DB__2M__2018/0042M4ARA02.px/table/tableViewLayout1/",
+    "https://openstat.psa.gov.ph/PXWeb/pxweb/en/DB/DB__2M__2018/0042M4ARA03.px/table/tableViewLayout1/",
+    "https://openstat.psa.gov.ph/PXWeb/pxweb/en/DB/DB__2M__2018/0042M4ARA04.px/table/tableViewLayout1/",
+    "https://openstat.psa.gov.ph/PXWeb/pxweb/en/DB/DB__2M__2018/0042M4ARA05.px/table/tableViewLayout1/",
+    "https://openstat.psa.gov.ph/PXWeb/pxweb/en/DB/DB__2M__2018/0042M4ARA06.px/table/tableViewLayout1/",
+    "https://openstat.psa.gov.ph/PXWeb/pxweb/en/DB/DB__2M__2018/0042M4ARA07.px/table/tableViewLayout1/",
+    "https://openstat.psa.gov.ph/PXWeb/pxweb/en/DB/DB__2M__2018/0042M4ARA08.px/table/tableViewLayout1/",
+    "https://openstat.psa.gov.ph/PXWeb/pxweb/en/DB/DB__2M__2018/0042M4ARA09.px/table/tableViewLayout1/",
+    "https://openstat.psa.gov.ph/PXWeb/pxweb/en/DB/DB__2M__2018/0042M4ARA10.px/table/tableViewLayout1/",
+]
+
 
 def normalize_openstat_url(url: str) -> str:
     """Stable checkpoint key: strip whitespace, drop query/fragment, no trailing slash."""
@@ -26,10 +40,19 @@ def normalize_openstat_url(url: str) -> str:
     return urlunparse((parsed.scheme, parsed.netloc.lower(), path, "", "", ""))
 
 
+def get_openstat_urls(raw: str | None = None) -> list[str]:
+    """Return OpenSTAT commodity URLs, using an optional comma-separated override."""
+    value = raw if raw is not None else os.getenv("OPENSTAT_URLS", "")
+    if value.strip():
+        urls = [u for u in value.split(",") if u and u.strip()]
+    else:
+        urls = DEFAULT_OPENSTAT_URLS
+    return [normalize_openstat_url(u) for u in urls if u and u.strip()]
+
+
 def parse_urls_env(raw: str | None = None) -> list[str]:
-    """Comma-separated URLS from env (or explicit string)."""
-    value = raw if raw is not None else os.getenv("URLS", "")
-    return [normalize_openstat_url(u) for u in value.split(",") if u and u.strip()]
+    """Backward-compatible alias for older tests/imports."""
+    return get_openstat_urls(raw)
 
 
 def load_completed_urls(

@@ -10,10 +10,10 @@ from src.openstat.utils import (
     get_cloudflare_cookies,
 )
 from src.openstat.scrapers.openstat_checkpoint import (
+    get_openstat_urls,
     load_completed_urls,
     merge_and_save_table_csv,
     normalize_openstat_url,
-    parse_urls_env,
     save_completed_urls,
     tag_frames_with_source_url,
 )
@@ -32,7 +32,12 @@ HAS_STEALTH = stealth_available()
 
 console = Console()
 load_dotenv()
-urls = os.getenv("URLS", "").split(",")
+
+
+def _browser_headless() -> bool:
+    raw = os.getenv("OPENSTAT_HEADLESS", os.getenv("HEADLESS", "true"))
+    return raw.strip().lower() != "false"
+
 timestamp = datetime.now().strftime("%B%d,%Y_%H-%M-%S")
 
 # OpenSTAT outputs under data/
@@ -145,16 +150,14 @@ def scrape_all():
     if not openstat_enabled():
         console.print("[yellow]OPENSTAT=false. OpenSTAT scraper disabled. Set OPENSTAT=true in .env to run.[/yellow]")
         return
-    if not urls or not any(u and u.strip() for u in urls):
-        console.print("[yellow]URLS not set in .env. Add OpenSTAT URLs (comma-separated).[/yellow]")
-        return
 
     all_data_frames = []
     urls_updated_this_run: set[str] = set()
-    url_list = parse_urls_env()
+    url_list = get_openstat_urls()
     resume_checkpoint = os.getenv("RESUME_CHECKPOINT", "false").strip().lower() in ("true", "1", "yes")
     completed_urls_before_run: set[str] = set()
     console.rule(f"[bold cyan]Agri-Price Scraper (OpenSTAT) Started at {timestamp}")
+    console.print(f"[dim]OpenSTAT URL targets: {len(url_list)}[/dim]")
 
     os.makedirs(SCRAPER_DOWNLOADS_DIR, exist_ok=True)
     downloads_path = os.path.abspath(SCRAPER_DOWNLOADS_DIR)
@@ -167,11 +170,13 @@ def scrape_all():
         "--no-default-browser-check",
         f'--download-default-directory="{downloads_path}"',
     ]
+    headless = _browser_headless()
+    console.print(f"[dim]Browser: {'headless' if headless else 'visible'}[/dim]")
 
     with sync_playwright() as p:
         try:
             browser = p.chromium.launch(
-                headless=False,
+                headless=headless,
                 channel="chrome",
                 args=launch_args,
             )
@@ -179,16 +184,16 @@ def scrape_all():
         except Exception:
             try:
                 browser = p.chromium.launch(
-                    headless=False,
+                    headless=headless,
                     channel="msedge",
                     args=launch_args,
                 )
                 console.print(f"[dim]Using Microsoft Edge. Excel downloads → {downloads_path}[/dim]")
             except Exception:
-                browser = p.chromium.launch(headless=False, args=launch_args)
+                browser = p.chromium.launch(headless=headless, args=launch_args)
                 console.print(f"[dim]Using Chromium. Excel downloads → {downloads_path}[/dim]")
 
-        first_url = next((u.strip() for u in urls if u and u.strip()), None)
+        first_url = next((u.strip() for u in url_list if u and u.strip()), None)
         bypass_cookies, bypass_user_agent = get_cloudflare_cookies(first_url, log=lambda msg: console.print(msg))
 
         context_options = {
@@ -242,7 +247,7 @@ def scrape_all():
                 except Exception:
                     pass
 
-        for url_index, url in enumerate(urls):
+        for url_index, url in enumerate(url_list):
             if not url or not url.strip():
                 continue
             url = normalize_openstat_url(url.strip())
@@ -250,12 +255,12 @@ def scrape_all():
                 continue
             if resume_checkpoint and url in completed_urls:
                 console.print(
-                    f"[dim]Skipping URL {url_index + 1}/{len(urls)} (checkpoint): {url[:80]}…[/dim]"
+                    f"[dim]Skipping URL {url_index + 1}/{len(url_list)} (checkpoint): {url[:80]}…[/dim]"
                     if len(url) > 80
-                    else f"[dim]Skipping URL {url_index + 1}/{len(urls)} (checkpoint): {url}[/dim]"
+                    else f"[dim]Skipping URL {url_index + 1}/{len(url_list)} (checkpoint): {url}[/dim]"
                 )
                 continue
-            console.rule(f"[bold green]Processing URL {url_index + 1}/{len(urls)}")
+            console.rule(f"[bold green]Processing URL {url_index + 1}/{len(url_list)}")
             if not navigate_with_retries(page, url):
                 console.print(f"[yellow]Skipping URL {url_index + 1} (connection timeout or Error 522).[/yellow]")
                 continue

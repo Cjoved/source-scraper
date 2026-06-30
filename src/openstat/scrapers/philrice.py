@@ -23,6 +23,12 @@ HAS_STEALTH = stealth_available()
 load_dotenv()
 console = Console()
 
+
+def _browser_headless() -> bool:
+    raw = os.getenv("PHILRICE_HEADLESS", os.getenv("HEADLESS", "true"))
+    return raw.strip().lower() != "false"
+
+
 PHILRICE_PDFS_DIR = data_path("philrice_pdfs")
 CHECKPOINT_PATH = data_path("checkpoints", "philrice_checkpoint.json")
 
@@ -421,15 +427,17 @@ def run():
         "--no-first-run",
         "--no-default-browser-check",
     ]
+    headless = _browser_headless()
+    console.print(f"[dim]Browser: {'headless' if headless else 'visible'}[/dim]")
 
     with sync_playwright() as p:
         try:
-            browser = p.chromium.launch(headless=False, channel="chrome", args=launch_args)
+            browser = p.chromium.launch(headless=headless, channel="chrome", args=launch_args)
         except Exception:
             try:
-                browser = p.chromium.launch(headless=False, channel="msedge", args=launch_args)
+                browser = p.chromium.launch(headless=headless, channel="msedge", args=launch_args)
             except Exception:
-                browser = p.chromium.launch(headless=False, args=launch_args)
+                browser = p.chromium.launch(headless=headless, args=launch_args)
 
         context = browser.new_context(
             viewport={"width": 1280, "height": 720},
