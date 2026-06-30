@@ -1,16 +1,11 @@
-# Local app stack for Source Scraper.
+# Deploy/staging app stack for Source Scraper.
 #
-# This local compose assumes Qdrant and FlareSolverr are already running on
-# your host machine. For deploy/staging with a FlareSolverr container, use:
-#   docker compose -f docker-compose.deploy.yml up -d
-#
-# Optional local overrides:
-#   DOCKER_QDRANT_URL=http://host.docker.internal:6333
-#   DOCKER_FLARESOLVERR_URL=http://host.docker.internal:8191
+# Qdrant is intentionally not defined here. Deploy Qdrant separately and set:
+#   DOCKER_QDRANT_URL=http://<qdrant-host>:6333
 #
 # Common commands:
-#   docker compose up -d
-#   docker compose --profile scheduler up -d
+#   docker compose -f docker-compose.deploy.yml up -d
+#   docker compose -f docker-compose.deploy.yml --profile scheduler up -d
 
 services:
   api:
@@ -34,7 +29,7 @@ services:
       - .env
     environment:
       QDRANT_URL: ${DOCKER_QDRANT_URL:-http://host.docker.internal:6333}
-      FLARESOLVERR_URL: ${DOCKER_FLARESOLVERR_URL:-http://host.docker.internal:8191}
+      FLARESOLVERR_URL: http://flaresolverr:8191
       HEADLESS: "true"
       PRISM_HEADLESS: "true"
       PHILRICE_HEADLESS: "true"
@@ -61,7 +56,7 @@ services:
       - .env
     environment:
       QDRANT_URL: ${DOCKER_QDRANT_URL:-http://host.docker.internal:6333}
-      FLARESOLVERR_URL: ${DOCKER_FLARESOLVERR_URL:-http://host.docker.internal:8191}
+      FLARESOLVERR_URL: http://flaresolverr:8191
       HEADLESS: "true"
       PRISM_HEADLESS: "true"
       PHILRICE_HEADLESS: "true"
@@ -71,4 +66,15 @@ services:
       OPENSTAT_HEADLESS: "true"
     volumes:
       - ./data:/app/data
+    restart: unless-stopped
+    depends_on:
+      - flaresolverr
+
+  flaresolverr:
+    image: flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    # Useful for staging smoke tests. In production, do not expose this port
+    # publicly unless an external caller genuinely needs direct access.
+    ports:
+      - "8191:8191"
     restart: unless-stopped
