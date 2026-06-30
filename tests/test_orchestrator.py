@@ -409,6 +409,19 @@ class QdrantPreflightTests(unittest.TestCase):
     def test_ensure_qdrant_already_up(self, _mock_health: mock.MagicMock) -> None:
         self.assertTrue(ensure_qdrant(start_if_down=False))
 
+    @patch("src.orchestrator.preflight.subprocess.run")
+    @patch("src.orchestrator.preflight.is_qdrant_healthy", return_value=False)
+    def test_ensure_qdrant_down_does_not_start_compose(
+        self,
+        _mock_health: mock.MagicMock,
+        mock_run: mock.MagicMock,
+    ) -> None:
+        logs: list[str] = []
+
+        self.assertFalse(ensure_qdrant(log=logs.append))
+        mock_run.assert_not_called()
+        self.assertTrue(any("external to this compose stack" in line for line in logs))
+
 
 if __name__ == "__main__":
     unittest.main()
