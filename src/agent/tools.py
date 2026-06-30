@@ -162,6 +162,61 @@ def _payload_date(payload: dict[str, Any]) -> date | None:
     return None
 
 
+def _news_requested(query: str) -> bool:
+    text = query.lower()
+    markers = ("news", "balita", "update")
+    return any(marker in text for marker in markers)
+
+
+def _papers_requested(query: str) -> bool:
+    text = query.lower()
+    markers = (
+        "paper",
+        "papers",
+        "publication",
+        "publications",
+        "research",
+        "study",
+        "studies",
+        "journal",
+        "pdf",
+        "document",
+        "dokumento",
+        "babasan",
+        "babasahin",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _news_like_payload(payload: dict[str, Any]) -> bool:
+    source_id = str(payload.get("source_id") or "").lower()
+    if source_id == "philrice_news":
+        return True
+    if payload.get("page") is not None:
+        return False
+    searchable = " ".join(
+        str(payload.get(field) or "").lower()
+        for field in ("url", "filename", "doc_id", "title")
+    )
+    if ".pdf" in searchable:
+        return False
+    if "news" in searchable:
+        return True
+    return source_id == "irri"
+
+
+def _paper_like_payload(payload: dict[str, Any]) -> bool:
+    source_id = str(payload.get("source_id") or "").lower()
+    if source_id in {"philrice", "pinoyrice"}:
+        return True
+    searchable = " ".join(
+        str(payload.get(field) or "").lower()
+        for field in ("url", "filename", "doc_id", "title")
+    )
+    markers = ("paper", "publication", "research", "study", "journal", ".pdf")
+    return any(marker in searchable for marker in markers)
+
+
 def _sort_corpus_hits(hits: list[Any], sort_by: str) -> list[Any]:
     if sort_by != "latest":
         return hits
@@ -179,12 +234,19 @@ def _sort_corpus_hits(hits: list[Any], sort_by: str) -> list[Any]:
 def _latest_corpus_hits(
     ctx: ToolExecutionContext,
     *,
+    query: str,
     flt: CorpusFilter,
     limit: int,
 ) -> list[KnowledgeHitRecord]:
     candidates: list[KnowledgeHitRecord] = []
+    news_requested = _news_requested(query)
+    papers_requested = _papers_requested(query)
     for payload in ctx.store.iter_corpus_rows(flt, max_rows=LATEST_CORPUS_SCAN_LIMIT):
         if _payload_date(payload) is None:
+            continue
+        if news_requested and not _news_like_payload(payload):
+            continue
+        if papers_requested and not _paper_like_payload(payload):
             continue
         candidates.append(KnowledgeHitRecord(score=1.0, payload=payload))
     return _sort_corpus_hits(candidates, "latest")[:limit]
@@ -200,7 +262,7 @@ def _search_corpus_impl(
 ) -> ToolExecutionResult:
     flt = CorpusFilter(source_ids=tuple(source_ids) if source_ids else None)
     if sort_by == "latest":
-        hits = _latest_corpus_hits(ctx, flt=flt, limit=limit)
+        hits = _latest_corpus_hits(ctx, query=query, flt=flt, limit=limit)
     else:
         hits = ctx.store.search_corpus(
             query_text=query,

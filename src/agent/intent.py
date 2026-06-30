@@ -9,12 +9,15 @@ FarmerIntent = Literal[
     "price_query",
     "yield_query",
     "news_query",
+    "paper_query",
     "advisory_query",
     "unclear_query",
     "developer_task",
 ]
 
 FARMER_CORPUS_SOURCE_IDS = ("philrice_news", "irri", "philrice", "pinoyrice")
+FARMER_NEWS_SOURCE_IDS = ("philrice_news", "irri")
+FARMER_PAPER_SOURCE_IDS = ("philrice", "pinoyrice")
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,25 @@ def _classify_intent(message: str, user_type: str) -> FarmerIntent:
         return "price_query"
     if _has_any(text, ("ani", "yield", "production", "mababa ani", "harvest")):
         return "yield_query"
+    if _has_any(
+        text,
+        (
+            "paper",
+            "papers",
+            "publication",
+            "publications",
+            "research",
+            "study",
+            "studies",
+            "journal",
+            "pdf",
+            "document",
+            "dokumento",
+            "babasan",
+            "babasahin",
+        ),
+    ):
+        return "paper_query"
     if _has_any(text, ("balita", "news", "latest", "newest", "recent", "update")):
         return "news_query"
     if _has_any(
@@ -132,10 +154,14 @@ def infer_farmer_intent(
     resolved_crop = _infer_crop(message, crop)
     intent = _classify_intent(message, resolved_user_type)
     clarification = _clarification(intent, location=resolved_location, crop=resolved_crop)
-    recommended_source_ids = list(source_ids or FARMER_CORPUS_SOURCE_IDS) if intent in {
-        "news_query",
-        "advisory_query",
-    } else None
+    if intent == "news_query":
+        recommended_source_ids = list(source_ids or FARMER_NEWS_SOURCE_IDS)
+    elif intent == "paper_query":
+        recommended_source_ids = list(source_ids or FARMER_PAPER_SOURCE_IDS)
+    elif intent == "advisory_query":
+        recommended_source_ids = list(source_ids or FARMER_CORPUS_SOURCE_IDS)
+    else:
+        recommended_source_ids = None
 
     return FarmerIntentResult(
         intent=intent,

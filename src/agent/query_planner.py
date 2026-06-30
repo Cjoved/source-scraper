@@ -189,7 +189,7 @@ def _tool_preference(intent: str, message: str) -> ToolPreference:
         return "search_prices" if exploratory and not numeric else "summarize_prices"
     if intent == "yield_query":
         return "search_yield_knowledge" if exploratory and not numeric else "summarize_yield"
-    if intent in {"news_query", "advisory_query"}:
+    if intent in {"news_query", "paper_query", "advisory_query"}:
         return "search_corpus"
     return "none"
 
@@ -206,7 +206,7 @@ def build_query_plan(
     warnings: list[AgentWarning] = []
     plan_source_ids: list[str] | None = None
 
-    if intent in {"news_query", "advisory_query"}:
+    if intent in {"news_query", "paper_query", "advisory_query"}:
         plan_source_ids = farmer_context.recommended_source_ids or list(source_ids or FARMER_CORPUS_SOURCE_IDS)
     elif source_ids:
         ignored_context.append("source_ids")

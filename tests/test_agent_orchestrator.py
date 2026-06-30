@@ -416,6 +416,15 @@ class TestAgentOrchestrator(unittest.TestCase):
                 },
                 {
                     "source_id": "irri",
+                    "doc_id": "pdf-page",
+                    "title": "Gender inclusive legislative framework laws women resilience",
+                    "url": "https://example.test/report.pdf",
+                    "filename": "legal_report_2026-06-15.pdf",
+                    "page": 83,
+                    "text": "Gender-Sensitive Disaster Risk Management and Action on Climate Change.",
+                },
+                {
+                    "source_id": "irri",
                     "doc_id": "newer",
                     "title": "Latest IRRI news",
                     "url": "https://example.test/newer",
@@ -467,6 +476,7 @@ class TestAgentOrchestrator(unittest.TestCase):
         tool_payload = json.loads(str(tool_message.content))
         hits = tool_payload["payload"]["hits"]
         self.assertEqual(hits[0]["title"], "Latest IRRI news")
+        self.assertNotIn("Gender inclusive", {hit["title"] for hit in hits})
         self.assertTrue(all(hit["source_id"] == "irri" for hit in hits))
 
     def test_tool_call_summarizes_prices_with_store(self) -> None:
@@ -666,10 +676,69 @@ class TestAgentOrchestrator(unittest.TestCase):
 
         self.assertEqual(
             response.tool_calls[0].arguments["source_ids"],
-            ["philrice_news", "irri", "philrice", "pinoyrice"],
+            ["philrice_news", "irri"],
         )
         self.assertEqual(response.tool_calls[0].arguments["sort_by"], "latest")
         self.assertEqual(response.confidence, AgentConfidence.MEDIUM)
+
+    def test_latest_papers_query_defaults_to_publication_sources(self) -> None:
+        store = FakeQdrantStore()
+        store.seed_corpus(
+            [
+                {
+                    "source_id": "irri",
+                    "doc_id": "irri-news",
+                    "title": "Latest IRRI news",
+                    "filename": "irri_news_2026-06-20.txt",
+                    "text": "Latest news but not a paper source.",
+                },
+                {
+                    "source_id": "philrice",
+                    "doc_id": "philrice-paper",
+                    "title": "PhilRice rice production paper",
+                    "filename": "philrice_paper_2026-06-01.pdf",
+                    "text": "Research paper about rice production.",
+                },
+                {
+                    "source_id": "pinoyrice",
+                    "doc_id": "pinoyrice-guide",
+                    "title": "PinoyRice production guide",
+                    "filename": "pinoyrice_publication_2026-05-15.pdf",
+                    "text": "Farmer publication about palay production.",
+                },
+            ]
+        )
+        model = ToolCallingModel(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_1",
+                            "name": "search_corpus",
+                            "args": {"query": "latest papers", "limit": 5},
+                        }
+                    ],
+                ),
+                FakeMessage('{"answer": "May latest papers mula PhilRice at PinoyRice.", "tasklist": []}'),
+            ]
+        )
+
+        with patch("src.agent.orchestrator.create_chat_model", return_value=model):
+            response = run_agent_chat(
+                AgentChatRequest(message="Ano yung latest papers na meron tayo?", mode=AgentMode.CHAT),
+                _settings(),
+                store=store,
+            )
+
+        self.assertEqual(response.tool_calls[0].arguments["source_ids"], ["philrice", "pinoyrice"])
+        self.assertEqual(response.tool_calls[0].arguments["sort_by"], "latest")
+        second_invocation = cast(list[object], model.invocations[1])
+        tool_message = next(message for message in second_invocation if isinstance(message, ToolMessage))
+        tool_payload = json.loads(str(tool_message.content))
+        hits = tool_payload["payload"]["hits"]
+        self.assertEqual({hit["source_id"] for hit in hits}, {"philrice", "pinoyrice"})
+        self.assertNotIn("irri", {source.source_id for source in response.sources})
 
     def test_farmer_advisory_without_crop_adds_one_clarification_context(self) -> None:
         model = FakeModel(
@@ -751,6 +820,77 @@ class TestAgentOrchestrator(unittest.TestCase):
         self.assertEqual(response.tool_calls[0].name, "summarize_prices")
         self.assertEqual(response.tool_calls[0].result_count, 0)
         self.assertEqual(response.sources, [])
+        self.assertTrue(any(warning.code == "no_results" for warning in response.warnings))
+
+    def test_price_query_blocks_irrelevant_corpus_fallback_sources(self) -> None:
+        store = FakeQdrantStore()
+        store.seed_corpus(
+            [
+                {
+                    "source_id": "irri",
+                    "doc_id": "climate-1",
+                    "title": "Climate advisory",
+                    "text": "palay climate advisory but not a farmgate price record",
+                    "published_date": "2026-06-01",
+                }
+            ]
+        )
+        model = ToolCallingModel(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_1",
+                            "name": "summarize_prices",
+                            "args": {"geolocation": "Abra", "commodity": "Palay"},
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_2",
+                            "name": "search_prices",
+                            "args": {
+                                "query": "palay presyo Abra",
+                                "geolocation": "Abra",
+                                "commodity": "Palay",
+                            },
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_3",
+                            "name": "search_corpus",
+                            "args": {
+                                "query": "presyo ng palay Abra 2025",
+                                "sort_by": "latest",
+                            },
+                        }
+                    ],
+                ),
+                FakeMessage(
+                    '{"answer": "Wala akong matching OpenSTAT price record for palay sa Abra.", "tasklist": []}'
+                ),
+            ]
+        )
+
+        with patch("src.agent.orchestrator.create_chat_model", return_value=model):
+            response = run_agent_chat(
+                AgentChatRequest(message="Magkano palay ngayon dito sa Abra?", mode=AgentMode.CHAT),
+                _settings(),
+                store=store,
+            )
+
+        self.assertEqual([call.name for call in response.tool_calls], ["summarize_prices", "search_prices"])
+        self.assertEqual(response.sources, [])
+        self.assertEqual(response.confidence, AgentConfidence.LOW)
+        self.assertTrue(any(warning.code == "tool_scope_blocked" for warning in response.warnings))
         self.assertTrue(any(warning.code == "no_results" for warning in response.warnings))
 
 

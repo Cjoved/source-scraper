@@ -33,6 +33,9 @@ from src.storage.qdrant_store import QdrantStoreProtocol
 
 DETERMINISTIC_TOOLS = {"summarize_yield", "summarize_prices"}
 SEARCH_TOOLS = {"search_corpus", "search_yield_knowledge", "search_prices"}
+PRICE_TOOLS = {"summarize_prices", "search_prices"}
+YIELD_TOOLS = {"summarize_yield", "search_yield_knowledge"}
+CORPUS_TOOLS = {"search_corpus"}
 SEVERE_WARNING_CODES = {
     "agent_disabled",
     "agent_api_key_missing",
@@ -190,6 +193,38 @@ def _confidence(
 
 def _tool_cache_key(name: str, args: dict[str, Any]) -> str:
     return json.dumps({"name": name, "args": args}, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _tool_family(name: str) -> str | None:
+    if name in PRICE_TOOLS:
+        return "price"
+    if name in YIELD_TOOLS:
+        return "yield"
+    if name in CORPUS_TOOLS:
+        return "corpus"
+    return None
+
+
+def _active_tool_family(
+    query_plan: AgentQueryPlan,
+    tool_calls: list[AgentToolCall],
+) -> str | None:
+    preferred_family = _tool_family(query_plan.tool_preference)
+    if preferred_family in {"price", "yield"}:
+        return preferred_family
+    for call in tool_calls:
+        family = _tool_family(call.name)
+        if family in {"price", "yield"}:
+            return family
+    return preferred_family
+
+
+def _tool_allowed_for_family(name: str, active_family: str | None) -> bool:
+    if active_family == "price":
+        return name in PRICE_TOOLS
+    if active_family == "yield":
+        return name in YIELD_TOOLS
+    return True
 
 
 def _best_tool_answer(
@@ -575,6 +610,33 @@ def run_agent_chat(
 
             for name, args, call_id in tool_calls:
                 args = _normalize_tool_args(name, args, body, query_plan)
+                active_family = _active_tool_family(query_plan, tool_call_records)
+                if not _tool_allowed_for_family(name, active_family):
+                    warnings.append(
+                        _warning(
+                            "tool_scope_blocked",
+                            (
+                                f"Blocked `{name}` because this request is scoped to "
+                                f"{active_family} data."
+                            ),
+                        )
+                    )
+                    messages.append(
+                        ToolMessage(
+                            content=json.dumps(
+                                {
+                                    "error": (
+                                        f"{name} is not relevant for a "
+                                        f"{active_family} data request."
+                                    )
+                                }
+                            ),
+                            tool_call_id=call_id,
+                            name=name,
+                        )
+                    )
+                    remaining_tool_calls -= 1
+                    continue
                 cache_key = _tool_cache_key(name, args)
                 cached_result = tool_result_cache.get(cache_key)
                 if cached_result is not None:
