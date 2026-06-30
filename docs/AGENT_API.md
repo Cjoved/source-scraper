@@ -61,6 +61,19 @@ Disabled local-development config:
 AGENT_ENABLED=false
 ```
 
+Optional JWT user identity for agent chat:
+
+```env
+JWT_AUTH_ENABLED=false
+JWT_REQUIRED_FOR_AGENT=false
+JWT_SECRET=change-me-for-local-demo
+JWT_ALGORITHM=HS256
+JWT_ISSUER=
+JWT_AUDIENCE=
+```
+
+`X-API-Key` still controls service/API access. `Authorization: Bearer <jwt>` is only for end-user identity such as `sub`, `role`, and `tenant_id`. Keep JWT disabled during local development if you do not need user identity.
+
 ## Request Shape
 
 ```json
@@ -71,6 +84,7 @@ AGENT_ENABLED=false
   "location": null,
   "crop": null,
   "language": null,
+  "session_id": null,
   "max_tool_calls": null
 }
 ```
@@ -131,6 +145,17 @@ curl -X POST "http://127.0.0.1:8000/v1/agent/chat" \
   -d '{"message":"Ano ang dapat gawin kapag naninilaw ang dahon ng palay?","mode":"chat","source_ids":["pinoyrice"],"crop":"palay"}'
 ```
 
+Agent chat with JWT user identity:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/v1/agent/chat" \
+  -H "accept: application/json" \
+  -H "X-API-Key: <public-api-key>" \
+  -H "Authorization: Bearer <jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Magkano palay ngayon sa Abra?","mode":"chat","session_id":"demo-session-1"}'
+```
+
 ## Response Fields
 
 - `answer`: final user-facing answer.
@@ -140,6 +165,8 @@ curl -X POST "http://127.0.0.1:8000/v1/agent/chat" \
 - `warnings`: structured warnings such as missing API key, no results, timeout, or ignored source scope.
 - `confidence`: `high` for deterministic summaries, `medium` for RAG-backed answers, `low` for fallback or no-result responses.
 - `took_ms`: endpoint duration.
+
+JWT claims are not echoed back in the response. The API uses the verified JWT internally for user identity and future session/memory routing.
 
 ## Testing Without Real Model Calls
 
@@ -179,5 +206,7 @@ Some non-agent tests may require optional services or browser dependencies such 
 
 - Do not commit real `.env` files or API keys.
 - Do not log `AGENT_API_KEY`.
+- Do not trust `user_id` from request bodies; user identity must come from a verified JWT `sub` claim.
+- Do not return or mint JWTs from `/v1/agent/chat`; token refresh belongs to the auth/login service.
 - The current agent tools are read-only and must not trigger scraping, indexing, exports, deletes, or admin operations.
 - Keep public API auth and rate limits enabled outside local development.

@@ -25,6 +25,7 @@ api = [
     "pydantic-settings>=2.4",
     "slowapi>=0.1.9",
     "structlog>=24.1",
+    "pyjwt>=2.12.1",
 ]
 dev = [
     "ruff>=0.6",

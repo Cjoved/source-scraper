@@ -43,6 +43,12 @@ work for local development.
 | `API_KEYS_PUBLIC` | `""` | Comma-separated public-tier API keys |
 | `API_KEYS_ADMIN` | `""` | Comma-separated admin-tier API keys |
 | `API_AUTH_DISABLED` | `false` | Bypass auth for local dev/tests |
+| `JWT_AUTH_ENABLED` | `false` | Enable JWT parsing for end-user identity |
+| `JWT_REQUIRED_FOR_AGENT` | `false` | Require `Authorization: Bearer <jwt>` for `/v1/agent/chat` |
+| `JWT_SECRET` | `""` | HS256 shared secret for local/demo JWT verification |
+| `JWT_ALGORITHM` | `HS256` | JWT signing algorithm supported by this build |
+| `JWT_ISSUER` | `""` | Optional expected JWT issuer |
+| `JWT_AUDIENCE` | `""` | Optional expected JWT audience |
 | `RATE_LIMIT_READ` | `120/minute` | List, metadata, summary, status |
 | `RATE_LIMIT_SEARCH` | `30/minute` | Knowledge search |
 | `RATE_LIMIT_EXPORT` | `5/minute` | Bulk export |
@@ -65,6 +71,11 @@ API keys are sent in the `X-API-Key` header. There are two tiers:
 
 Set the keys via `API_KEYS_PUBLIC` and `API_KEYS_ADMIN`. For local development
 or tests, set `API_AUTH_DISABLED=true` to bypass.
+
+JWT is optional end-user identity for agent chat. When enabled, clients send
+`Authorization: Bearer <jwt>` and the API verifies the token, extracts `sub` as
+the user id, and keeps the normal JSON response shape. The API does not mint or
+return JWTs from chat endpoints.
 
 ## Errors
 

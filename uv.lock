@@ -4267,6 +4267,7 @@ agent = [
 api = [
     { name = "fastapi" },
     { name = "pydantic-settings" },
+    { name = "pyjwt" },
     { name = "qdrant-client", extra = ["fastembed"] },
     { name = "slowapi" },
     { name = "structlog" },
@@ -4331,6 +4332,7 @@ requires-dist = [
     { name = "pydantic-settings", marker = "extra == 'api'", specifier = ">=2.4" },
     { name = "pydantic-settings", marker = "extra == 'dev'", specifier = ">=2.4" },
     { name = "pydantic-settings", marker = "extra == 'orchestrator'", specifier = ">=2.4" },
+    { name = "pyjwt", marker = "extra == 'api'", specifier = ">=2.12.1" },
     { name = "pymupdf", marker = "extra == 'openstat'", specifier = ">=1.24" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", marker = "extra == 'orchestrator'", specifier = ">=6.0" },
