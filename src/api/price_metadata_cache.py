@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass, field
 from threading import Lock
 
@@ -52,11 +53,11 @@ def build_price_snapshot_from_rows(rows: list[dict[str, object]]) -> PriceMetada
 
     for row in rows:
         year_val = row.get("year")
-        try:
-            if year_val is not None:
+        if isinstance(year_val, int):
+            years.add(year_val)
+        elif isinstance(year_val, str):
+            with suppress(ValueError):
                 years.add(int(year_val))
-        except (TypeError, ValueError):
-            pass
 
         month = str(row.get("month") or "").strip()
         if month:

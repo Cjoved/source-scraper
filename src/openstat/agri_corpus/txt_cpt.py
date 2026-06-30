@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from src.openstat.agri_corpus.cpt_utils import make_cpt_record
 from src.utils.text_chunk import chunk_text
@@ -16,15 +17,21 @@ def text_to_cpt_records(
     base_id: str,
     min_chars: int,
     max_chars: int,
-    **extra_kwargs: str | int | None,
+    **extra_kwargs: Any,
 ) -> list[dict]:
     """Build CPT records from cleaned text (optional chunking)."""
     text = (text or "").strip()
     if not text or len(text) < min_chars:
         return []
 
-    allowed = ("url", "title", "filename", "page")
-    kwargs = {k: v for k, v in extra_kwargs.items() if k in allowed and v is not None}
+    url = extra_kwargs.get("url")
+    title = extra_kwargs.get("title")
+    filename = extra_kwargs.get("filename")
+    page = extra_kwargs.get("page")
+    url = url if isinstance(url, str) else None
+    title = title if isinstance(title, str) else None
+    filename = filename if isinstance(filename, str) else None
+    page = page if isinstance(page, int) else None
 
     if max_chars > 0 and len(text) > max_chars:
         chunks = chunk_text(text, max_chars)
@@ -33,11 +40,29 @@ def text_to_cpt_records(
             if len(ch) < min_chars:
                 continue
             records.append(
-                make_cpt_record(ch, source, f"{base_id}_chunk_{j}", **kwargs)
+                make_cpt_record(
+                    ch,
+                    source,
+                    f"{base_id}_chunk_{j}",
+                    url=url,
+                    title=title,
+                    filename=filename,
+                    page=page,
+                )
             )
         return records
 
-    return [make_cpt_record(text, source, base_id, **kwargs)]
+    return [
+        make_cpt_record(
+            text,
+            source,
+            base_id,
+            url=url,
+            title=title,
+            filename=filename,
+            page=page,
+        )
+    ]
 
 
 def txt_file_to_cpt_records(
@@ -47,7 +72,7 @@ def txt_file_to_cpt_records(
     min_chars: int,
     max_chars: int,
     base_id_from: Callable[[Path, str], str],
-    extra_fields: Callable[[Path], dict] | None = None,
+    extra_fields: Callable[[Path], dict[str, Any]] | None = None,
     preprocess: Callable[[str], str] | None = None,
 ) -> list[dict]:
     """

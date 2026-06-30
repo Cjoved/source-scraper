@@ -3,6 +3,7 @@ Shared PDF utilities: extract text + tables, detect/remove noise lines, clean te
 """
 import re
 from collections import Counter
+from contextlib import suppress
 
 from src.utils.text_sanitize import sanitize_corpus_text
 
@@ -78,10 +79,8 @@ def extract_text_from_pdf(pdf_path: str) -> list[dict]:
         return []
     finally:
         if plumber_doc is not None:
-            try:
+            with suppress(Exception):
                 plumber_doc.close()
-            except Exception:
-                pass
     return out
 
 

@@ -8,13 +8,17 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import Depends
 
 from src.api.metadata_cache import MetadataCache
+from src.api.price_metadata_cache import PriceMetadataCache
 from src.api.settings import Settings, get_settings
 from src.services.config import data_path
 from src.storage.qdrant_store import QdrantStoreProtocol
+
+SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
 @lru_cache(maxsize=1)
@@ -34,29 +38,27 @@ def _qdrant_store_singleton() -> QdrantStoreProtocol:
 
 
 def get_qdrant_store(
-    _settings: Settings = Depends(get_settings),
+    _settings: SettingsDep,
 ) -> QdrantStoreProtocol:
     return _qdrant_store_singleton()
 
 
-def get_csv_source_path(settings: Settings = Depends(get_settings)) -> Path:
+def get_csv_source_path(settings: SettingsDep) -> Path:
     parts = settings.csv_source_relpath.split("/")
     return data_path(*parts)
 
 
-def get_openstat_csv_path(settings: Settings = Depends(get_settings)) -> Path:
+def get_openstat_csv_path(settings: SettingsDep) -> Path:
     parts = settings.openstat_csv_source_relpath.split("/")
     return data_path(*parts)
 
 
 @lru_cache(maxsize=1)
-def _price_metadata_cache_singleton() -> "PriceMetadataCache":
-    from src.api.price_metadata_cache import PriceMetadataCache
-
+def _price_metadata_cache_singleton() -> PriceMetadataCache:
     return PriceMetadataCache()
 
 
-def get_price_metadata_cache() -> "PriceMetadataCache":
+def get_price_metadata_cache() -> PriceMetadataCache:
     return _price_metadata_cache_singleton()
 
 

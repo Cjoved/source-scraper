@@ -199,7 +199,7 @@ async def on_message(message: cl.Message) -> None:
     await _handle_text(message.content)
 
 
-@cl.set_chat_profiles
+@cl.on_chat_start
 async def set_chat_profiles() -> list[cl.ChatProfile]:
     return [
         cl.ChatProfile(
