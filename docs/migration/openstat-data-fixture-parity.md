@@ -7,8 +7,8 @@ Defines minimum inputs and acceptable variance for parity checks.
 - Stable internet access for live crawler targets.
 - `.env` values for exactly one OpenStat workflow toggle per run.
 - For OpenSTAT workflow:
-  - `URLS` must include at least one valid OpenSTAT endpoint.
-  - Optional MySQL settings only if DB insert validation is required.
+  - Default OpenSTAT endpoints are defined in code; set `OPENSTAT_URLS` only when overriding the target list.
+  - OpenSTAT outputs are file-based (CSV/CPT JSONL under `data/openstat_processed/`); vector search uses Qdrant in later phases (P3.8+).
 - For PRISM compatibility workflow:
   - `PRISM_URL` or `PRISM_URLS` set for browser path.
   - `PRISM_JOB=export_yield_csv` for yield export path.
