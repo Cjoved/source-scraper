@@ -1,12 +1,12 @@
 # PRiSM API — Deployment Plan
 
-Deployment guide for the **versioned HTTP API** (`/v1/`). This document covers FastAPI + Qdrant only.
+Deployment guide for the **versioned HTTP API** (`/v1/`). This document covers FastAPI plus externally deployed Qdrant.
 
 For endpoint reference and environment variables, see [api.md](api.md).
 
 ---
 
-## Task: Deploy the PRiSM API (FastAPI + Qdrant)
+## Task: Deploy the PRiSM API (FastAPI + External Qdrant)
 
 ### Description
 
@@ -16,8 +16,8 @@ Put the versioned HTTP API into production so consumers can query the indexed PR
 
 | Component | Details |
 | --- | --- |
-| App | FastAPI + uvicorn (`uv run python main.py api` or `uvicorn main:app`) |
-| Vector DB | Qdrant (`prism_yield_records`, `prism_yield_knowledge`) |
+| App | FastAPI + uvicorn (`uv run python main.py api`, `uvicorn main:app`, or the repository Docker image) |
+| Vector DB | External Qdrant (`prism_yield_records`, `prism_yield_knowledge`) |
 | Data source | `data/prism_processed/prism_yield_export.csv` (from the separate yield export job) |
 | Security | `X-API-Key` (public vs admin scopes), rate limits, optional CORS |
 
@@ -54,15 +54,20 @@ Put the versioned HTTP API into production so consumers can query the indexed PR
 
 ### 3. Containerize or package the API
 
-> **Note:** A Dockerfile is not in the repo yet; add one as part of this subtask.
+The repository includes a Dockerfile and `docker-compose.yml` for the API endpoint plus scraper/orchestrator automation. UI/Chainlit is intentionally not part of the Docker image or compose stack.
 
-- Add a **Dockerfile** (or platform build config): Python 3.12, `uv sync --extra api`, start command:
+- The image uses Python 3.12 and installs the API, orchestrator, browser, and OpenStat extras required for API serving and headless scraper/index jobs.
+- The default container command serves the API with uvicorn:
 
   ```bash
   uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
   ```
 
-- Use only the `api` extra unless you have a reason to pull in browser deps.
+- Compose services:
+  - `api`: serves `/v1/*` on port 8000.
+  - `scheduler` profile: runs `python -m src.orchestrator serve` for scheduled scraper, validation, indexing, backup, and alert jobs.
+  - `flaresolverr`: local helper for OpenSTAT scraper bypass only; the API does not depend on it.
+- Qdrant is external. Set `QDRANT_URL` for direct runs or `DOCKER_QDRANT_URL` for compose so containers receive the correct `QDRANT_URL`.
 - Account for **embedding model download** on first index/start (FastEmbed models from settings).
 
 ### 4. Configure production environment variables
@@ -98,6 +103,7 @@ API_CORS_ORIGINS=https://your-frontend.example
 ### 5. Deploy the API service
 
 - Deploy the container/process bound to the service port (e.g. 8000).
+- Deploy or provision Qdrant separately and keep it reachable from the API/indexer environment. Prefer private networking or Qdrant Cloud with an API key.
 - Health check: `GET /v1/health` (200 when Qdrant is OK; 503 + `Retry-After` when Qdrant is down — expected).
 - Terminate TLS at a reverse proxy or the platform (nginx, Caddy, load balancer).
 - Optionally restrict or disable `/v1/docs` on the public internet (`API_DOCS_ENABLED=false` or allowlist).
@@ -194,8 +200,11 @@ flowchart LR
 # Install API dependencies
 uv sync --extra api
 
-# Run Qdrant locally (development)
-docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
+# Run the API container locally against an external Qdrant endpoint
+DOCKER_QDRANT_URL=http://host.docker.internal:6333 docker compose up -d api
+
+# Run the scheduler profile for scraper/orchestrator automation
+DOCKER_QDRANT_URL=http://host.docker.internal:6333 docker compose --profile scheduler up -d
 
 # Index yield CSV
 uv run python main.py index --collections all

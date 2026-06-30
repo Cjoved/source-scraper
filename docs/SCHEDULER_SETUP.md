@@ -138,22 +138,23 @@ OpenSTAT needs FlareSolverr for Cloudflare bypass.
 
 The **HTTP API** reads indexed yield data from Qdrant — it does not scrape. After each monthly `prism_yield` export, run **`prism_index`** (scheduled 07:00 PH, one hour after yield at 06:00) to upsert the CSV into Qdrant.
 
-1. Start Qdrant (from project root):
+1. Deploy or start Qdrant separately (for example, Qdrant Cloud or a standalone Qdrant container/VM). Qdrant is **not** a service in this repository's `docker-compose.yml`.
 
-   ```bash
-   docker compose up -d qdrant
-   ```
-
-2. Set in `.env`:
+2. Set in `.env` for local Python runs:
 
    ```env
    QDRANT_URL=http://localhost:6333
    ```
 
+   When running the API or scheduler through Docker Compose, set the container-reachable URL:
+
+   ```env
+   DOCKER_QDRANT_URL=http://host.docker.internal:6333
+   ```
+
 3. Before each **prism_index** run, preflight will:
    - Health-check Qdrant (`GET /healthz`)
-   - If down, run `docker compose up -d qdrant` and wait up to 60s
-   - Fail the job if still unreachable
+   - Fail the job with a clear message if the external Qdrant endpoint is unreachable
 
 Manual index:
 
@@ -243,7 +244,7 @@ These are **separate long-running processes** on the same host (or split across 
 
 | Process | Role | Command |
 |---------|------|---------|
-| **Qdrant** | Vector DB for API | `docker compose up -d qdrant` |
+| **Qdrant** | External vector DB for API/indexers | Qdrant Cloud, standalone container, or separately managed service |
 | **API** | Serves `/v1/*` queries | `uv run python main.py api --port 8000` |
 | **Orchestrator** | Scheduled scrapes + index | `uv run python -m src.orchestrator serve` or OS cron → `run --due` |
 
@@ -262,8 +263,8 @@ flowchart LR
 **Local dev (3 terminals):**
 
 ```bash
-# Terminal 1 — infrastructure
-docker compose up -d
+# Terminal 1 — local scraper helper
+docker compose up -d flaresolverr
 
 # Terminal 2 — API (always-on)
 uv sync --extra api
@@ -284,7 +285,7 @@ OpenStat / PhilRice corpora (JSONL under `data/`) are indexed into **`agri_corpu
 | `No jobs due at this time` | Normal between cron slots; use `list` to see next run |
 | `Skipped (browser lock held by …)` | Wait for the other job or remove stale lock if PID is dead |
 | OpenSTAT preflight failed | `docker compose logs flaresolverr`; check port 8191 |
-| Qdrant preflight failed | `docker compose logs qdrant`; check port 6333 and `QDRANT_URL` |
+| Qdrant preflight failed | Check the external Qdrant service, port 6333, and `QDRANT_URL` / `DOCKER_QDRANT_URL` |
 | API shows stale yield data | Confirm `prism_index` ran after `prism_yield`; check `GET /v1/index/status` |
 | Job exceeded timeout (yellow) | Increase `timeout_minutes` in `orchestrator.yaml` for that job |
 | Corpus validation failed | See `data/runs/<run_id>/validation_report.json`; run `validate_corpus --source <id> --quality` manually |
