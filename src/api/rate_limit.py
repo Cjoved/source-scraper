@@ -12,14 +12,14 @@ from slowapi.util import get_remote_address
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from src.api.auth import API_KEY_HEADER
+from src.api.auth import API_KEY_HEADER, hash_key
 from src.api.errors import ErrorCode, error_payload
 
 
 def _key_func(request: Request) -> str:
     api_key = request.headers.get(API_KEY_HEADER)
     if api_key:
-        return f"key:{api_key}"
+        return f"key:{hash_key(api_key)}"
     return f"ip:{get_remote_address(request)}"
 
 

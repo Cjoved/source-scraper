@@ -6,7 +6,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
@@ -29,6 +29,9 @@ from src.api.schemas import (
 )
 from src.api.settings import Settings
 from src.storage.qdrant_store import QdrantStoreProtocol
+
+if TYPE_CHECKING:
+    from src.api.auth import AuthScope, CurrentUser
 
 
 DETERMINISTIC_TOOLS = {"summarize_yield", "summarize_prices"}
@@ -713,11 +716,33 @@ def _dedupe_sources(sources: list[AgentSource]) -> list[AgentSource]:
     return out
 
 
+def _effective_user_type(
+    body: AgentChatRequest,
+    *,
+    api_scope: object | None = None,
+    current_user: object | None = None,
+) -> str:
+    requested = body.user_type.value
+    if requested not in {"admin", "developer"}:
+        return requested
+
+    from src.api.auth import AuthScope
+
+    if api_scope is AuthScope.ADMIN:
+        return requested
+    role = getattr(current_user, "role", None) if current_user is not None else None
+    if isinstance(role, str) and role.lower() in {"admin", "developer"}:
+        return requested
+    return "farmer"
+
+
 def run_agent_chat(
     body: AgentChatRequest,
     settings: Settings,
     *,
     store: QdrantStoreProtocol | None = None,
+    api_scope: object | None = None,
+    current_user: object | None = None,
 ) -> AgentChatResponse:
     started = time.perf_counter()
     mode = _resolve_mode(body, settings)
@@ -739,7 +764,7 @@ def run_agent_chat(
 
     farmer_context = infer_farmer_intent(
         message=body.message,
-        user_type=body.user_type.value,
+        user_type=_effective_user_type(body, api_scope=api_scope, current_user=current_user),
         location=body.location,
         crop=body.crop,
         language=body.language,
@@ -760,7 +785,16 @@ def run_agent_chat(
         farmer_context=_farmer_context_text(farmer_context),
         query_plan_context=query_plan_text(query_plan),
     )
-    tools = build_agent_tools(ToolExecutionContext(store)) if store is not None else []
+    tools = (
+        build_agent_tools(
+            ToolExecutionContext(
+                store,
+                summarize_max_rows=settings.agent_summarize_max_rows,
+            )
+        )
+        if store is not None
+        else []
+    )
     tool_by_name = {tool.name: tool for tool in tools}
     model_for_call = _bind_tools_if_supported(model, tools)
     remaining_tool_calls = (

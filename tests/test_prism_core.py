@@ -38,8 +38,11 @@ class FakeYieldClient:
 
 class TestPrismUrls(unittest.TestCase):
     def test_parse_seed_urls_splits_commas(self) -> None:
-        raw = "https://a.example/x, https://b.example/y"
-        self.assertEqual(parse_seed_urls(raw), ["https://a.example/x", "https://b.example/y"])
+        raw = "https://prism.philrice.gov.ph/a, https://prism.philrice.gov.ph/b"
+        self.assertEqual(
+            parse_seed_urls(raw),
+            ["https://prism.philrice.gov.ph/a", "https://prism.philrice.gov.ph/b"],
+        )
 
     def test_normalize_dataproducts(self) -> None:
         u = "https://prism.philrice.gov.ph/dataproducts/"

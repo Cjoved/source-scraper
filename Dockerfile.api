@@ -1,3 +1,4 @@
+# Slim API-only image (no Playwright/Scrapling browser stack).
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -8,27 +9,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        gcc \
-        g++ \
-        git \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir uv
 
 COPY pyproject.toml uv.lock README.md ./
 
-RUN uv sync --frozen --no-dev \
-    --extra api \
-    --extra orchestrator \
-    --extra agent \
-    --extra browser \
-    --extra openstat
-
-RUN uv run playwright install --with-deps chromium
-RUN uv run scrapling install
+RUN uv sync --frozen --no-dev --extra api --extra agent
 
 COPY . .
 

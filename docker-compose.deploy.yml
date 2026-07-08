@@ -71,10 +71,7 @@ services:
       - flaresolverr
 
   flaresolverr:
-    image: flaresolverr/flaresolverr:latest
+    image: flaresolverr/flaresolverr:v3.3.21
     container_name: flaresolverr
-    # Useful for staging smoke tests. In production, do not expose this port
-    # publicly unless an external caller genuinely needs direct access.
-    ports:
-      - "8191:8191"
+    # Internal network only — do not publish port 8191 in production.
     restart: unless-stopped

@@ -9,8 +9,9 @@ configuration exclusively through the `Settings` instance returned by
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Self
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,9 +38,14 @@ class Settings(BaseSettings):
     api_log_json: bool = Field(default=True)
     api_cors_origins: str = Field(default="")
 
+    app_env: str = Field(default="")
+    allow_auth_disabled: bool = Field(default=False)
+
     api_keys_public: str = Field(default="")
     api_keys_admin: str = Field(default="")
+    api_keys_agent: str = Field(default="")
     api_auth_disabled: bool = Field(default=False)
+    agent_allow_public: bool = Field(default=False)
 
     jwt_auth_enabled: bool = Field(default=False)
     jwt_required_for_agent: bool = Field(default=False)
@@ -51,6 +57,8 @@ class Settings(BaseSettings):
     rate_limit_read: str = Field(default="120/minute")
     rate_limit_search: str = Field(default="30/minute")
     rate_limit_export: str = Field(default="5/minute")
+    rate_limit_health: str = Field(default="60/minute")
+    rate_limit_agent: str = Field(default="10/minute")
 
     export_max_rows: int = Field(default=100_000, gt=0)
     summary_cache_size: int = Field(default=256, gt=0)
@@ -65,6 +73,7 @@ class Settings(BaseSettings):
     agent_timeout_seconds: float = Field(default=60.0, gt=0)
     agent_max_tool_calls: int = Field(default=4, ge=0, le=8)
     agent_default_mode: str = Field(default="tasklist")
+    agent_summarize_max_rows: int = Field(default=10_000, gt=0)
 
     qdrant_url: str = Field(default="http://localhost:6333")
     qdrant_api_key: str | None = Field(default=None)
@@ -145,6 +154,29 @@ class Settings(BaseSettings):
     @property
     def admin_keys(self) -> set[str]:
         return set(_split_csv(self.api_keys_admin))
+
+    @property
+    def agent_keys(self) -> set[str]:
+        return set(_split_csv(self.api_keys_agent))
+
+    @model_validator(mode="after")
+    def _validate_security_config(self) -> Self:
+        dev_envs = {"development", "dev", "local", "test"}
+        env = (self.app_env.lower().strip() or "development")
+        auth_bypass_ok = self.allow_auth_disabled or env in dev_envs
+
+        if self.api_auth_disabled and not auth_bypass_ok:
+            raise ValueError(
+                "API_AUTH_DISABLED=true is not allowed unless APP_ENV is "
+                "development/test or ALLOW_AUTH_DISABLED=true is set explicitly."
+            )
+
+        if not self.api_auth_disabled and not self.public_keys and not self.admin_keys:
+            raise ValueError(
+                "At least one API key must be configured in API_KEYS_PUBLIC or "
+                "API_KEYS_ADMIN when API_AUTH_DISABLED=false."
+            )
+        return self
 
 
 @lru_cache(maxsize=1)

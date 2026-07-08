@@ -209,3 +209,29 @@ def get_current_user_required(
 
 require_public = _require_scope(AuthScope.PUBLIC)
 require_admin = _require_scope(AuthScope.ADMIN)
+
+
+def require_agent(
+    settings: SettingsDep,
+    api_key: ApiKeyHeader = None,
+) -> AuthScope:
+    """Agent route: admin keys, dedicated agent keys, or public if explicitly allowed."""
+    scope = _resolve_scope(api_key, settings)
+    if scope is None:
+        raise ApiError(
+            ErrorCode.UNAUTHORIZED,
+            "Missing or invalid API key",
+            status_code=401,
+            headers={"WWW-Authenticate": API_KEY_HEADER},
+        )
+    if scope is AuthScope.ADMIN:
+        return scope
+    if api_key and api_key in settings.agent_keys:
+        return scope
+    if settings.agent_allow_public and scope is AuthScope.PUBLIC:
+        return scope
+    raise ApiError(
+        ErrorCode.FORBIDDEN,
+        "Agent scope required (admin or agent API key)",
+        status_code=403,
+    )

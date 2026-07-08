@@ -10,6 +10,7 @@ from urllib.parse import urlparse, urlunparse
 import pandas as pd
 
 from src.openstat.agri_corpus.scraper_utils import load_checkpoint, save_checkpoint
+from src.utils.url_policy import UrlPolicyError, validate_http_url
 
 TABLE_COLUMNS = ["Geolocation", "Commodity Type", "Commodity", "Year", "Month", "Price"]
 SOURCE_URL_COLUMN = "Source URL"
@@ -47,7 +48,13 @@ def get_openstat_urls(raw: str | None = None) -> list[str]:
         urls = [u for u in value.split(",") if u and u.strip()]
     else:
         urls = DEFAULT_OPENSTAT_URLS
-    return [normalize_openstat_url(u) for u in urls if u and u.strip()]
+    validated: list[str] = []
+    for u in urls:
+        try:
+            validated.append(normalize_openstat_url(validate_http_url(u.strip())))
+        except UrlPolicyError:
+            continue
+    return [u for u in validated if u]
 
 
 def parse_urls_env(raw: str | None = None) -> list[str]:

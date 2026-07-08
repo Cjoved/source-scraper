@@ -5,10 +5,21 @@ from __future__ import annotations
 import re
 import urllib.parse
 
+from src.utils.url_policy import UrlPolicyError, validate_http_url
+
 
 def parse_seed_urls(raw: str) -> list[str]:
     parts = re.split(r"[\s,]+", raw)
-    return [p.strip() for p in parts if p.strip().startswith(("http://", "https://"))]
+    urls: list[str] = []
+    for part in parts:
+        candidate = part.strip()
+        if not candidate.startswith(("http://", "https://")):
+            continue
+        try:
+            urls.append(validate_http_url(candidate))
+        except UrlPolicyError:
+            continue
+    return urls
 
 
 def normalize_prism_target_url(url: str, *, rewrite_dataproducts: bool = True) -> str:

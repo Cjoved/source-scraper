@@ -307,6 +307,7 @@ class CorpusRagIndexJobTests(unittest.TestCase):
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
         self.assertFalse(run_job("corpus_rag_index", cfg))
 
+    @patch("src.storage.wasabi_store.wasabi_enabled", return_value=False)
     @patch("src.orchestrator.jobs.send_run_alert")
     @patch("src.orchestrator.jobs.ensure_qdrant", return_value=True)
     @patch.dict(
@@ -315,7 +316,10 @@ class CorpusRagIndexJobTests(unittest.TestCase):
         clear=False,
     )
     def test_corpus_rag_index_runs_when_qdrant_up(
-        self, _mock_ensure: mock.MagicMock, _mock_alert: mock.MagicMock
+        self,
+        _mock_ensure: mock.MagicMock,
+        _mock_alert: mock.MagicMock,
+        _mock_wasabi: mock.MagicMock,
     ) -> None:
         from src.indexing.corpus_rag_indexer import CorpusIndexStats, SourceIndexStats
         from src.orchestrator import jobs
@@ -341,6 +345,7 @@ class OpenstatIndexJobTests(unittest.TestCase):
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
         self.assertFalse(run_job("openstat_index", cfg))
 
+    @patch("src.storage.wasabi_store.wasabi_enabled", return_value=False)
     @patch("src.orchestrator.jobs.send_run_alert")
     @patch("src.orchestrator.jobs.ensure_qdrant", return_value=True)
     @patch.dict(
@@ -349,7 +354,10 @@ class OpenstatIndexJobTests(unittest.TestCase):
         clear=False,
     )
     def test_openstat_index_runs_when_qdrant_up(
-        self, _mock_ensure: mock.MagicMock, _mock_alert: mock.MagicMock
+        self,
+        _mock_ensure: mock.MagicMock,
+        _mock_alert: mock.MagicMock,
+        _mock_wasabi: mock.MagicMock,
     ) -> None:
         from src.indexing.price_indexer import PriceIndexStats
         from src.orchestrator import jobs
@@ -375,6 +383,7 @@ class PrismIndexJobTests(unittest.TestCase):
         cfg = load_config(PROJECT_ROOT / "orchestrator.yaml")
         self.assertFalse(run_job("prism_index", cfg))
 
+    @patch("src.storage.wasabi_store.wasabi_enabled", return_value=False)
     @patch("src.orchestrator.jobs.send_run_alert")
     @patch("src.orchestrator.jobs.ensure_qdrant", return_value=True)
     @patch.dict(
@@ -383,7 +392,10 @@ class PrismIndexJobTests(unittest.TestCase):
         clear=False,
     )
     def test_prism_index_runs_when_qdrant_up(
-        self, _mock_ensure: mock.MagicMock, _mock_alert: mock.MagicMock
+        self,
+        _mock_ensure: mock.MagicMock,
+        _mock_alert: mock.MagicMock,
+        _mock_wasabi: mock.MagicMock,
     ) -> None:
         from src.orchestrator import jobs
 

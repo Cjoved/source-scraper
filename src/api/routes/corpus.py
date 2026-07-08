@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Request
 
 from src.api.auth import require_public
 from src.api.deps import get_qdrant_store
+from src.api.limit_config import rate_limit_search
 from src.api.rate_limit import limiter
 from src.api.schemas import (
     CorpusHit,
@@ -49,7 +50,7 @@ def _hit_record_to_schema(record: KnowledgeHitRecord) -> CorpusHit | None:
         "**Auth**: public tier. Rate-limited 30/min per key."
     ),
 )
-@limiter.limit("30/minute")
+@limiter.limit(rate_limit_search)
 def corpus_search(
     request: Request,
     body: CorpusSearchRequest,

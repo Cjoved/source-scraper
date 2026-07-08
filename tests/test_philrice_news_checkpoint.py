@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src.openstat.scrapers.philrice_news import (
     PhilRiceNewsScrapeStatus,
@@ -112,7 +113,8 @@ class PhilriceNewsCheckpointTests(unittest.TestCase):
             try:
                 mod.PHILRICE_NEWS_DIR = str(news)
                 mod.CHECKPOINT_PATH = ckpt
-                urls, mapping, dead = _load_checkpoint_state()[:3]
+                with patch.object(mod, "_stream_mode", return_value=False):
+                    urls, mapping, dead = _load_checkpoint_state()[:3]
             finally:
                 mod.PHILRICE_NEWS_DIR = old_news
                 mod.CHECKPOINT_PATH = old_ckpt

@@ -32,6 +32,13 @@ uv run chainlit run src/agent/ui_chainlit.py -w --port 8001
 
 Open the Chainlit URL printed in the terminal, usually `http://localhost:8001`. Keep FastAPI on `http://127.0.0.1:8000` so the UI can call `/v1/agent/chat` without a port conflict.
 
+## Production security
+
+- Do **not** expose Chainlit publicly without Chainlit password/OAuth enabled.
+- `.chainlit/config.toml` disables spontaneous file uploads and restricts `allow_origins` by default.
+- Point `AGENT_UI_API_KEY` at an admin or agent API key (`AGENT_ALLOW_PUBLIC=false` in production).
+- See [SECURITY_REVIEW.md](SECURITY_REVIEW.md) for the full checklist.
+
 ## UI Enhancements
 
 The demo uses native Chainlit UI features:

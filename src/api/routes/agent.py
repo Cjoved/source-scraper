@@ -7,8 +7,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 
 from src.agent.orchestrator import run_agent_chat
-from src.api.auth import CurrentUser, get_current_user_optional, require_public
+from src.api.auth import AuthScope, CurrentUser, get_current_user_optional, require_agent
 from src.api.deps import get_qdrant_store
+from src.api.limit_config import rate_limit_agent
 from src.api.rate_limit import limiter
 from src.api.schemas import AgentChatRequest, AgentChatResponse
 from src.api.settings import Settings, get_settings
@@ -16,7 +17,7 @@ from src.storage.qdrant_store import QdrantStoreProtocol
 
 router = APIRouter(tags=["agent"])
 
-PublicScopeDep = Annotated[object, Depends(require_public)]
+AgentScopeDep = Annotated[AuthScope, Depends(require_agent)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 StoreDep = Annotated[QdrantStoreProtocol, Depends(get_qdrant_store)]
 CurrentUserDep = Annotated[CurrentUser | None, Depends(get_current_user_optional)]
@@ -115,14 +116,20 @@ AGENT_CHAT_RESPONSE_EXAMPLE = {
         },
     },
 )
-@limiter.limit("10/minute")
+@limiter.limit(rate_limit_agent)
 def agent_chat(
     request: Request,
     body: AgentChatRequest,
-    _scope: PublicScopeDep,
+    scope: AgentScopeDep,
     settings: SettingsDep,
     store: StoreDep,
     current_user: CurrentUserDep,
 ) -> AgentChatResponse:
-    del request, current_user
-    return run_agent_chat(body, settings, store=store)
+    del request
+    return run_agent_chat(
+        body,
+        settings,
+        store=store,
+        api_scope=scope,
+        current_user=current_user,
+    )

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from src.api.deps import get_qdrant_store
 from src.api.errors import ApiError, ErrorCode
+from src.api.limit_config import rate_limit_health
+from src.api.rate_limit import limiter
 from src.api.schemas import HealthResponse
 from src.storage.qdrant_store import QdrantStoreProtocol
 
@@ -61,7 +63,12 @@ router = APIRouter(tags=["health"])
         },
     },
 )
-def health(store: QdrantStoreProtocol = Depends(get_qdrant_store)) -> HealthResponse:
+@limiter.limit(rate_limit_health)
+def health(
+    request: Request,
+    store: QdrantStoreProtocol = Depends(get_qdrant_store),
+) -> HealthResponse:
+    del request
     """Ping Qdrant and report reachable collections."""
     if not store.ping():
         raise ApiError(

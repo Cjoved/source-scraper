@@ -6,6 +6,8 @@ import os
 import requests
 from urllib.parse import urlparse
 
+from src.utils.url_policy import UrlPolicyError, validate_http_url
+
 
 def get_flaresolverr_url():
     url = (os.getenv("FLARESOLVERR_URL") or "http://localhost:8191").strip().rstrip("/")
@@ -33,6 +35,11 @@ def get_cloudflare_cookies(url, log=None):
     """Call FlareSolverr to solve Cloudflare for the given URL. Returns (cookies_list, user_agent)."""
     if log is None:
         log = print
+    try:
+        validate_http_url(url)
+    except UrlPolicyError as exc:
+        log(f"FlareSolverr URL rejected by policy: {exc}")
+        return [], None
     base = get_flaresolverr_url()
     session_id = None
     create_payload = {"cmd": "sessions.create"}

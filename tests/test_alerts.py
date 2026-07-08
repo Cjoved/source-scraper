@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -191,7 +192,8 @@ class AlertsTests(unittest.TestCase):
             raise RuntimeError("disk full on corpus write")
         except RuntimeError as exc:
             ctx.mark_failed(message=str(exc), exc=exc)
-        html = _alert_message_html(ctx)
+        with mock.patch.dict(os.environ, {"ALERT_INCLUDE_TRACEBACK": "true"}):
+            html = _alert_message_html(ctx)
         self.assertIn("RuntimeError", html)
         self.assertIn("disk full", html)
 

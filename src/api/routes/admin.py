@@ -16,6 +16,7 @@ from src.api.deps import (
     get_qdrant_store,
 )
 from src.api.metadata_cache import MetadataCache, build_snapshot_from_rows
+from src.api.limit_config import rate_limit_read, rate_limit_search
 from src.api.rate_limit import limiter
 from src.api.schemas import (
     CollectionStatus,
@@ -59,7 +60,7 @@ def _count_csv_rows(path: Path) -> int | None:
         "**Auth**: admin tier."
     ),
 )
-@limiter.limit("120/minute")
+@limiter.limit(rate_limit_read)
 def index_status(
     request: Request,
     _scope: object = Depends(require_admin),
@@ -103,7 +104,7 @@ def index_status(
         "**Auth**: admin tier. Rate-limited 30/min per key."
     ),
 )
-@limiter.limit("30/minute")
+@limiter.limit(rate_limit_search)
 def refresh_metadata(
     request: Request,
     _scope: object = Depends(require_admin),

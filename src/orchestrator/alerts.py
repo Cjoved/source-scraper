@@ -13,15 +13,14 @@ from dataclasses import dataclass
 from email.mime.text import MIMEText
 from html import escape
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Literal
 from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from src.orchestrator.config import JobSpec, OrchestratorConfig
+from src.orchestrator.run_context import RunContext
 from src.services.config import data_path
-
-if TYPE_CHECKING:
-    from src.orchestrator.run_context import RunContext
 
 ALERTS_DIR = data_path("alerts")
 
@@ -221,6 +220,8 @@ def _run_artifact_path(ctx: RunContext, filename: str) -> str:
 
 
 def _traceback_summary(ctx: RunContext) -> str:
+    if not alert_include_traceback():
+        return ""
     tb = (ctx.error or {}).get("traceback", "")
     if not tb:
         return ""
@@ -603,6 +604,23 @@ def discord_configured() -> bool:
     return bool(os.getenv("ALERT_DISCORD_WEBHOOK_URL", "").strip())
 
 
+def alert_include_traceback() -> bool:
+    raw = os.getenv("ALERT_INCLUDE_TRACEBACK", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _sanitize_error_for_alert(error: dict[str, str] | None) -> dict[str, str] | None:
+    if not error:
+        return None
+    if alert_include_traceback():
+        return error
+    sanitized: dict[str, str] = {}
+    for key in ("type", "message"):
+        if key in error:
+            sanitized[key] = error[key]
+    return sanitized or None
+
+
 def _alert_message(ctx: RunContext) -> str:
     plain_tpl, _ = _message_templates(ctx)
     return _render_alert_template(plain_tpl, ctx)
@@ -618,7 +636,7 @@ def _alert_payload(ctx: RunContext) -> dict[str, object]:
         "run_id": ctx.run_id,
         "job_id": ctx.job_id,
         "status": ctx.status,
-        "error": ctx.error,
+        "error": _sanitize_error_for_alert(ctx.error),
         "error_explanation": ctx.error_explanation,
         "warnings": ctx.warnings,
         "manifest_path": str(ctx.manifest_path),
@@ -933,8 +951,6 @@ def send_test_alerts(
     """Send a test notification to every configured channel."""
     from datetime import UTC, datetime
 
-    from src.orchestrator.config import JobSpec, OrchestratorConfig
-    from src.orchestrator.run_context import RunContext
     from src.scripts.validate_corpus import FileReport
 
     spec = JobSpec(

@@ -8,18 +8,25 @@
 #   docker compose -f docker-compose.qdrant.yml logs -f qdrant
 #   docker compose -f docker-compose.qdrant.yml down
 #
-# App stack connection:
+# App stack connection (from app containers on same host):
 #   DOCKER_QDRANT_URL=http://host.docker.internal:6333
+#
+# Ports bind to 127.0.0.1 only — not exposed on the LAN/public interface.
+# Remote app hosts should reach Qdrant via private VPC/firewall, not this compose file.
+#
+# Set the same secret in the app .env as QDRANT_API_KEY.
+# Generate: openssl rand -hex 32
+#   QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
 
 name: source-scraper-qdrant
 
 services:
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.13.4
     container_name: qdrant-vector-db
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
     expose:
       - "6333"
       - "6334"
@@ -29,6 +36,7 @@ services:
     environment:
       QDRANT__SERVICE__HTTP_PORT: 6333
       QDRANT__SERVICE__GRPC_PORT: 6334
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?Set QDRANT_API_KEY for Qdrant authentication}
     restart: unless-stopped
 
 volumes:

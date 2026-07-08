@@ -208,7 +208,8 @@ def _format_sources(sources: list[Any]) -> str:
         source_id = source.get("source_id")
         snippet = source.get("snippet")
         page = source.get("page")
-        label = f"[{title}]({url})" if url else str(title)
+        safe_url = url if isinstance(url, str) and url.startswith("https://") else None
+        label = f"[{title}]({safe_url})" if safe_url else str(title)
         meta = []
         if source_id:
             meta.append(f"`{source_id}`")

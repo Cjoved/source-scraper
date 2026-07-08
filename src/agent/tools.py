@@ -27,6 +27,7 @@ LATEST_CORPUS_SCAN_LIMIT = 5000
 class ToolExecutionContext:
     store: QdrantStoreProtocol
     min_score: float = 0.0
+    summarize_max_rows: int = 10_000
 
 
 @dataclass(frozen=True)
@@ -388,10 +389,11 @@ def _summarize_yield_impl(
         year_max=year_max,
         semester=sem,
     )
-    rows = list(ctx.store.iter_yield_rows(flt))
+    rows = list(ctx.store.iter_yield_rows(flt, max_rows=ctx.summarize_max_rows))
     summary = aggregate_rows(rows, scope=scope)
     payload = summary.model_dump(mode="json")
     row_count = summary.overall.row_count
+    truncated = row_count >= ctx.summarize_max_rows
     sources = [
         AgentSource(
             source_id="prism_yield_records",
@@ -401,7 +403,10 @@ def _summarize_yield_impl(
     return ToolExecutionResult(
         name="summarize_yield",
         arguments=scope.model_dump(mode="json"),
-        summary=f"Computed yield summary over {row_count} row(s).",
+        summary=(
+            f"Computed yield summary over {row_count} row(s)"
+            + (" (truncated at row cap)." if truncated else ".")
+        ),
         result_count=row_count,
         payload=payload,
         sources=sources,
@@ -476,10 +481,11 @@ def _summarize_prices_impl(
         year_max=year_max,
         month=month,
     )
-    rows = list(ctx.store.iter_price_rows(flt))
+    rows = list(ctx.store.iter_price_rows(flt, max_rows=ctx.summarize_max_rows))
     summary = aggregate_price_rows(rows, scope=scope)
     payload = summary.model_dump(mode="json")
     row_count = summary.overall.row_count
+    truncated = row_count >= ctx.summarize_max_rows
     sources = [
         AgentSource(
             source_id="openstat_price_records",
@@ -489,7 +495,10 @@ def _summarize_prices_impl(
     return ToolExecutionResult(
         name="summarize_prices",
         arguments=scope.model_dump(mode="json"),
-        summary=f"Computed price summary over {row_count} row(s).",
+        summary=(
+            f"Computed price summary over {row_count} row(s)"
+            + (" (truncated at row cap)." if truncated else ".")
+        ),
         result_count=row_count,
         payload=payload,
         sources=sources,

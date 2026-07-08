@@ -212,3 +212,19 @@ uv run python main.py index --collections all
 # Start API locally
 uv run python main.py api --port 8000
 ```
+
+---
+
+## Security hardening
+
+See [SECURITY_REVIEW.md](SECURITY_REVIEW.md) for the full findings register and phased hardening roadmap.
+
+Production quick checklist:
+
+- `APP_ENV=production`, `API_AUTH_DISABLED=false`
+- Set `API_KEYS_PUBLIC`, `API_KEYS_ADMIN`, and optionally `API_KEYS_AGENT`
+- `API_DOCS_ENABLED=false`, `AGENT_ALLOW_PUBLIC=false`
+- Enable `QDRANT_API_KEY` on both Qdrant and the app (`docker-compose.qdrant.yml`)
+- Do not publish FlareSolverr port 8191 (use internal Docker network only)
+- Use `docker-compose.prod.yml` to split `.env.shared` / `.env.api` / `.env.scheduler`
+- Keep Chainlit local or protect it with Chainlit auth before exposing publicly

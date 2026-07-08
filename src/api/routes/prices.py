@@ -21,6 +21,7 @@ from src.api.deps import (
 )
 from src.api.errors import ApiError, ErrorCode
 from src.api.price_metadata_cache import PriceMetadataCache
+from src.api.limit_config import rate_limit_export, rate_limit_read, rate_limit_search
 from src.api.rate_limit import limiter
 from src.api.schemas import (
     ExportFormat,
@@ -91,7 +92,7 @@ def _hit_record_to_schema(record: KnowledgeHitRecord) -> PriceHit | None:
     response_model=PriceListResponse,
     summary="List PSA farmgate price rows (paginated, filterable)",
 )
-@limiter.limit("120/minute")
+@limiter.limit(rate_limit_read)
 def list_price_rows(
     request: Request,
     geolocation: str | None = Query(default=None, max_length=128),
@@ -131,7 +132,7 @@ def list_price_rows(
     response_model=PriceMetadataResponse,
     summary="Distinct filter values for OpenSTAT prices",
 )
-@limiter.limit("120/minute")
+@limiter.limit(rate_limit_read)
 def get_price_metadata(
     request: Request,
     _scope: object = Depends(require_public),
@@ -183,7 +184,7 @@ def _cached_price_summary(
     response_model=PriceSummaryResponse,
     summary="Deterministic PSA farmgate price aggregation",
 )
-@limiter.limit("120/minute")
+@limiter.limit(rate_limit_read)
 def get_price_summary(
     request: Request,
     geolocation: str | None = Query(default=None),
@@ -264,7 +265,7 @@ def _stream_csv(rows: Iterator[dict[str, object]]) -> Iterator[str]:
     summary="Bulk export of OpenSTAT price rows (NDJSON or CSV stream)",
     response_class=StreamingResponse,
 )
-@limiter.limit("5/minute")
+@limiter.limit(rate_limit_export)
 def export_price_rows(
     request: Request,
     format: ExportFormat = Query(default=ExportFormat.NDJSON, alias="format"),
@@ -313,7 +314,7 @@ def export_price_rows(
     response_model=PriceSearchResponse,
     summary="Hybrid semantic search over PSA farmgate price passages",
 )
-@limiter.limit("30/minute")
+@limiter.limit(rate_limit_search)
 def search_prices(
     request: Request,
     body: PriceSearchRequest,
@@ -346,7 +347,7 @@ def search_prices(
     response_model=RefreshPriceMetadataResponse,
     summary="Rebuild the in-memory OpenSTAT price metadata cache",
 )
-@limiter.limit("30/minute")
+@limiter.limit(rate_limit_search)
 def refresh_price_metadata_route(
     request: Request,
     _scope: object = Depends(require_admin),

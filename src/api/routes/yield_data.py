@@ -27,6 +27,7 @@ from src.api.deps import (
 )
 from src.api.errors import ApiError, ErrorCode
 from src.api.metadata_cache import MetadataCache
+from src.api.limit_config import rate_limit_export, rate_limit_read, rate_limit_search
 from src.api.rate_limit import limiter
 from src.api.schemas import (
     ExportFormat,
@@ -98,7 +99,7 @@ def _row_to_schema(row: dict[str, object]) -> YieldRow:
         "**Auth**: public tier."
     ),
 )
-@limiter.limit("120/minute")
+@limiter.limit(rate_limit_read)
 def list_yield_rows(
     request: Request,
     year: int | None = Query(default=None, ge=1900, le=2100, description="Exact year filter."),
@@ -147,7 +148,7 @@ def list_yield_rows(
         "**Auth**: public tier."
     ),
 )
-@limiter.limit("120/minute")
+@limiter.limit(rate_limit_read)
 def get_yield_metadata(
     request: Request,
     _scope: object = Depends(require_public),
@@ -229,7 +230,7 @@ def _cached_summary(
         "**Auth**: public tier."
     ),
 )
-@limiter.limit("120/minute")
+@limiter.limit(rate_limit_read)
 def get_yield_summary(
     request: Request,
     region: str | None = Query(default=None, description="Narrow scope to a single region."),
@@ -355,7 +356,7 @@ def _stream_csv(rows: Iterator[dict[str, object]]) -> Iterator[str]:
         }
     },
 )
-@limiter.limit("5/minute")
+@limiter.limit(rate_limit_export)
 def export_yield_rows(
     request: Request,
     format: ExportFormat = Query(

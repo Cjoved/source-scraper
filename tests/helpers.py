@@ -10,9 +10,11 @@ from fastapi.testclient import TestClient
 
 
 def _ensure_env_defaults() -> None:
+    os.environ.setdefault("APP_ENV", "test")
     os.environ.setdefault("API_AUTH_DISABLED", "true")
     os.environ.setdefault("API_KEYS_PUBLIC", "pub-test-key")
     os.environ.setdefault("API_KEYS_ADMIN", "adm-test-key")
+    os.environ.setdefault("API_KEYS_AGENT", "agent-test-key")
     os.environ.setdefault("API_LOG_JSON", "false")
     os.environ.setdefault("API_DOCS_ENABLED", "false")
 

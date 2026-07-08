@@ -67,6 +67,10 @@ def _settings(
     agent_model: str = "deepseek-chat",
 ) -> Settings:
     return Settings(
+        app_env="test",
+        api_auth_disabled=True,
+        api_keys_public="test-public",
+        api_keys_admin="test-admin",
         agent_provider=agent_provider,
         agent_api_key=agent_api_key,
         agent_model=agent_model,

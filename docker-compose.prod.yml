@@ -1,0 +1,25 @@
+# Production overrides for Source Scraper.
+#
+# Usage:
+#   docker compose -f docker-compose.deploy.yml -f docker-compose.prod.yml up -d
+#
+# Create env files from .env.example before deploy:
+#   .env.shared   — QDRANT_URL, shared paths
+#   .env.api      — API_KEYS_*, AGENT_*, API_DOCS_ENABLED=false
+#   .env.scheduler — scraper keys, Wasabi, alert webhooks (no API admin keys)
+
+services:
+  api:
+    env_file:
+      - .env.shared
+      - .env.api
+    environment:
+      APP_ENV: production
+      API_AUTH_DISABLED: "false"
+      API_DOCS_ENABLED: "false"
+      AGENT_ALLOW_PUBLIC: "false"
+
+  scheduler:
+    env_file:
+      - .env.shared
+      - .env.scheduler

@@ -181,6 +181,7 @@ class CorpusSearchRequest(BaseModel):
     limit: Annotated[int, Field(gt=0, le=50, description="Top-K hits to return.")] = 10
     source_ids: list[str] | None = Field(
         default=None,
+        max_length=10,
         description="Optional filter to one or more corpus source ids.",
     )
     min_score: Annotated[float, Field(ge=0.0, le=1.0, description="Drop hits with fused score below this.")] = 0.0
