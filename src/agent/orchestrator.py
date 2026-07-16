@@ -354,6 +354,13 @@ def _is_source_discovery_query(body: AgentChatRequest, query_plan: AgentQueryPla
         "bagong",
         "meron",
         "available",
+        "icheck",
+        "check",
+        "may news",
+        "may balita",
+        "tayo nito",
+        "natin ito",
+        "natin nito",
     )
     return any(marker in text for marker in discovery_markers)
 

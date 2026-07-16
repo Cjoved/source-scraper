@@ -54,9 +54,9 @@ Put the versioned HTTP API into production so consumers can query the indexed PR
 
 ### 3. Containerize or package the API
 
-The repository includes a Dockerfile and `docker-compose.yml` for the API endpoint plus scraper/orchestrator automation. UI/Chainlit is intentionally not part of the Docker image or compose stack.
+The repository includes a Dockerfile and `docker-compose.yml` for the API endpoint, optional Chainlit UI (`--profile ui`), and scraper/orchestrator automation.
 
-- The image uses Python 3.12 and installs the API, orchestrator, browser, and OpenStat extras required for API serving and headless scraper/index jobs.
+- The image uses Python 3.12 and installs the API, orchestrator, agent, **ui (Chainlit)**, browser, and OpenStat extras.
 - The default container command serves the API with uvicorn:
 
   ```bash
@@ -65,10 +65,26 @@ The repository includes a Dockerfile and `docker-compose.yml` for the API endpoi
 
 - Compose services:
   - `api`: serves `/v1/*` on port 8000.
+  - `chainlit` profile (`ui`): demo chat UI on port 8001 → calls `http://api:8000/v1/agent/chat`.
   - `scheduler` profile: runs `python -m src.orchestrator serve` for scheduled scraper, validation, indexing, backup, and alert jobs.
   - `flaresolverr`: local helper for OpenSTAT scraper bypass only; the API does not depend on it.
 - Qdrant is external. Set `QDRANT_URL` for direct runs or `DOCKER_QDRANT_URL` for compose so containers receive the correct `QDRANT_URL`.
 - Account for **embedding model download** on first index/start (FastEmbed models from settings).
+
+Verify with Chainlit (local or Hostinger, after Qdrant + index):
+
+```bash
+# Local
+docker compose --profile ui up -d --build
+
+# Deploy/staging
+docker compose -f docker-compose.deploy.yml --profile ui up -d --build
+
+# Production-shaped (Chainlit bound to 127.0.0.1:8001 only)
+docker compose -f docker-compose.deploy.yml -f docker-compose.prod.yml --profile ui up -d --build
+```
+
+Set `AGENT_UI_API_KEY` in `.env` / `.env.api` to an agent-scoped key when auth is enabled. Open `http://127.0.0.1:8001` (or SSH tunnel to Hostinger). Do **not** publish Chainlit publicly without Chainlit password/OAuth.
 
 ### 4. Configure production environment variables
 
@@ -227,4 +243,4 @@ Production quick checklist:
 - Enable `QDRANT_API_KEY` on both Qdrant and the app (`docker-compose.qdrant.yml`)
 - Do not publish FlareSolverr port 8191 (use internal Docker network only)
 - Use `docker-compose.prod.yml` to split `.env.shared` / `.env.api` / `.env.scheduler`
-- Keep Chainlit local or protect it with Chainlit auth before exposing publicly
+- Keep Chainlit on `--profile ui` (verify/staging); prod binds `127.0.0.1:8001` — add Chainlit auth before any public exposure

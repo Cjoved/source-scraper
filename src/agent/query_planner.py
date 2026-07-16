@@ -174,8 +174,13 @@ def _commodity_from_crop(crop: str | None) -> str | None:
     if not crop:
         return None
     normalized = crop.lower().strip()
-    if normalized in {"palay", "rice", "bigas"}:
+    # Short labels; Qdrant expands via price_commodity_aliases.
+    if normalized == "palay":
         return "Palay"
+    if normalized == "rice":
+        return "Rice"
+    if normalized == "bigas":
+        return "Bigas"
     if normalized in {"mais", "corn"}:
         return "Corn"
     return crop.strip() or None

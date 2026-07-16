@@ -24,6 +24,7 @@ RUN uv sync --frozen --no-dev \
     --extra api \
     --extra orchestrator \
     --extra agent \
+    --extra ui \
     --extra browser \
     --extra openstat
 
@@ -37,6 +38,6 @@ RUN groupadd -r appuser && useradd -r -g appuser -u 1000 appuser \
 
 USER appuser
 
-EXPOSE 8000
+EXPOSE 8000 8001
 
 CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]

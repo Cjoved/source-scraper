@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -41,6 +42,45 @@ def _clean(value: str | None) -> str | None:
 
 def _has_any(text: str, markers: tuple[str, ...]) -> bool:
     return any(marker in text for marker in markers)
+
+
+def _infer_mentioned_source_ids(message: str, intent: FarmerIntent) -> list[str] | None:
+    """Narrow corpus scope when the user names PhilRice / IRRI / PinoyRice."""
+    text = message.lower()
+    wants_philrice = _has_any(text, ("philrice", "phil rice", "phil-rice"))
+    wants_irri = re.search(r"\birri\b", text) is not None
+    wants_pinoyrice = _has_any(text, ("pinoyrice", "pinoy rice", "pinoy-rice"))
+    if not (wants_philrice or wants_irri or wants_pinoyrice):
+        return None
+
+    out: list[str] = []
+    if intent == "news_query":
+        if wants_philrice:
+            out.append("philrice_news")
+        if wants_irri:
+            out.append("irri")
+    elif intent == "paper_query":
+        if wants_philrice:
+            out.append("philrice")
+        if wants_pinoyrice:
+            out.append("pinoyrice")
+        if wants_irri:
+            out.append("irri")
+    else:
+        if wants_philrice:
+            out.extend(["philrice_news", "philrice"])
+        if wants_irri:
+            out.append("irri")
+        if wants_pinoyrice:
+            out.append("pinoyrice")
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for source_id in out:
+        if source_id not in seen:
+            seen.add(source_id)
+            ordered.append(source_id)
+    return ordered or None
 
 
 def _infer_language(message: str, language: str | None) -> str:
@@ -154,12 +194,13 @@ def infer_farmer_intent(
     resolved_crop = _infer_crop(message, crop)
     intent = _classify_intent(message, resolved_user_type)
     clarification = _clarification(intent, location=resolved_location, crop=resolved_crop)
+    mentioned = None if source_ids else _infer_mentioned_source_ids(message, intent)
     if intent == "news_query":
-        recommended_source_ids = list(source_ids or FARMER_NEWS_SOURCE_IDS)
+        recommended_source_ids = list(source_ids or mentioned or FARMER_NEWS_SOURCE_IDS)
     elif intent == "paper_query":
-        recommended_source_ids = list(source_ids or FARMER_PAPER_SOURCE_IDS)
+        recommended_source_ids = list(source_ids or mentioned or FARMER_PAPER_SOURCE_IDS)
     elif intent == "advisory_query":
-        recommended_source_ids = list(source_ids or FARMER_CORPUS_SOURCE_IDS)
+        recommended_source_ids = list(source_ids or mentioned or FARMER_CORPUS_SOURCE_IDS)
     else:
         recommended_source_ids = None
 

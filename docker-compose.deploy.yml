@@ -6,6 +6,7 @@
 # Common commands:
 #   docker compose -f docker-compose.deploy.yml up -d
 #   docker compose -f docker-compose.deploy.yml --profile scheduler up -d
+#   docker compose -f docker-compose.deploy.yml --profile ui up -d
 
 services:
   api:
@@ -41,6 +42,37 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+    restart: unless-stopped
+
+  # Optional Chainlit demo UI for verify/staging. Keep behind VPN/SSH tunnel;
+  # do not publish widely without Chainlit password/OAuth.
+  chainlit:
+    build:
+      context: .
+    container_name: source-scraper-chainlit
+    profiles:
+      - ui
+    command:
+      [
+        "uv",
+        "run",
+        "chainlit",
+        "run",
+        "src/agent/ui_chainlit.py",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8001",
+        "--headless",
+      ]
+    env_file:
+      - .env
+    environment:
+      AGENT_UI_API_URL: ${AGENT_UI_API_URL:-http://api:8000/v1/agent/chat}
+    ports:
+      - "8001:8001"
+    depends_on:
+      - api
     restart: unless-stopped
 
   # Scraper/orchestrator worker. Runs scheduled scrape, validation, indexing,

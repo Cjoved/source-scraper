@@ -16,7 +16,7 @@ This UI is intentionally thin. It calls the existing FastAPI endpoint and render
 uv sync --extra api --extra agent --extra ui
 ```
 
-## Run
+## Run (local process)
 
 Terminal 1, start the API:
 
@@ -32,9 +32,29 @@ uv run chainlit run src/agent/ui_chainlit.py -w --port 8001
 
 Open the Chainlit URL printed in the terminal, usually `http://localhost:8001`. Keep FastAPI on `http://127.0.0.1:8000` so the UI can call `/v1/agent/chat` without a port conflict.
 
+## Run (Docker)
+
+Chainlit is an optional compose profile (`ui`). It uses the same image as the API (includes `--extra ui`) and calls the `api` service over the Docker network.
+
+```bash
+# Local stack + UI
+docker compose --profile ui up -d --build
+
+# Deploy compose + UI
+docker compose -f docker-compose.deploy.yml --profile ui up -d --build
+
+# Prod overrides: Chainlit on 127.0.0.1:8001 only
+docker compose -f docker-compose.deploy.yml -f docker-compose.prod.yml --profile ui up -d --build
+```
+
+- UI: `http://127.0.0.1:8001`
+- Inside containers, `AGENT_UI_API_URL` defaults to `http://api:8000/v1/agent/chat`
+- Set `AGENT_UI_API_KEY` in `.env` / `.env.api` when API auth is enabled
+
 ## Production security
 
 - Do **not** expose Chainlit publicly without Chainlit password/OAuth enabled.
+- Prefer `--profile ui` only for verify/staging; prod override binds `127.0.0.1:8001`.
 - `.chainlit/config.toml` disables spontaneous file uploads and restricts `allow_origins` by default.
 - Point `AGENT_UI_API_KEY` at an admin or agent API key (`AGENT_ALLOW_PUBLIC=false` in production).
 - See [SECURITY_REVIEW.md](SECURITY_REVIEW.md) for the full checklist.
@@ -66,6 +86,8 @@ AGENT_UI_API_URL=http://127.0.0.1:8000/v1/agent/chat
 AGENT_UI_API_KEY=
 AGENT_UI_TIMEOUT_SECONDS=90
 ```
+
+In Docker (`--profile ui`), compose sets `AGENT_UI_API_URL=http://api:8000/v1/agent/chat` unless you override it.
 
 Set `AGENT_UI_API_KEY` when the API has public auth enabled. It is sent as `X-API-Key`.
 

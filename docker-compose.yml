@@ -11,6 +11,8 @@
 # Common commands:
 #   docker compose up -d
 #   docker compose --profile scheduler up -d
+#   docker compose --profile ui up -d
+#   docker compose --profile scheduler --profile ui up -d
 
 services:
   api:
@@ -46,6 +48,37 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+    restart: unless-stopped
+
+  # Optional Chainlit demo UI (calls api:/v1/agent/chat). Not for public internet
+  # without Chainlit auth; prefer SSH tunnel or 127.0.0.1 bind in prod.
+  chainlit:
+    build:
+      context: .
+    container_name: source-scraper-chainlit
+    profiles:
+      - ui
+    command:
+      [
+        "uv",
+        "run",
+        "chainlit",
+        "run",
+        "src/agent/ui_chainlit.py",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8001",
+        "--headless",
+      ]
+    env_file:
+      - .env
+    environment:
+      AGENT_UI_API_URL: ${AGENT_UI_API_URL:-http://api:8000/v1/agent/chat}
+    ports:
+      - "8001:8001"
+    depends_on:
+      - api
     restart: unless-stopped
 
   # Scraper/orchestrator worker. Runs scheduled scrape, validation, indexing,

@@ -2,6 +2,7 @@
 #
 # Usage:
 #   docker compose -f docker-compose.deploy.yml -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.deploy.yml -f docker-compose.prod.yml --profile ui up -d
 #
 # Create env files from .env.example before deploy:
 #   .env.shared   — QDRANT_URL, shared paths
@@ -18,6 +19,17 @@ services:
       API_AUTH_DISABLED: "false"
       API_DOCS_ENABLED: "false"
       AGENT_ALLOW_PUBLIC: "false"
+
+  # Verify UI only: localhost bind. SSH tunnel to reach it; do not open 8001 publicly.
+  chainlit:
+    env_file:
+      - .env.shared
+      - .env.api
+    environment:
+      AGENT_UI_API_URL: http://api:8000/v1/agent/chat
+      APP_ENV: production
+    ports:
+      - "127.0.0.1:8001:8001"
 
   scheduler:
     env_file:

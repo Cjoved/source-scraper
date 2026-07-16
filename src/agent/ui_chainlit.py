@@ -13,10 +13,14 @@ from typing import Any
 
 import chainlit as cl  # pyright: ignore[reportMissingImports] - optional `ui` extra.
 import httpx
+from dotenv import load_dotenv
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+
+# Chainlit does not load project .env by itself; pick up AGENT_UI_* for local runs.
+load_dotenv(_REPO_ROOT / ".env")
 
 from src.agent.ui_helpers import (
     DEFAULT_UI_MODE,

@@ -448,7 +448,20 @@ class QdrantStore:
                 FieldCondition(key="commodity_type", match=MatchValue(value=flt.commodity_type))
             )
         if flt.commodity:
-            must.append(FieldCondition(key="commodity", match=MatchValue(value=flt.commodity)))
+            from src.services.price_commodity_aliases import resolve_commodity_match_values
+
+            commodity_values = resolve_commodity_match_values(flt.commodity)
+            if len(commodity_values) == 1:
+                must.append(
+                    FieldCondition(key="commodity", match=MatchValue(value=commodity_values[0]))
+                )
+            elif commodity_values:
+                must.append(
+                    FieldCondition(
+                        key="commodity",
+                        match=models.MatchAny(any=commodity_values),
+                    )
+                )
         if flt.year is not None:
             must.append(FieldCondition(key="year", match=MatchValue(value=flt.year)))
         if flt.year_min is not None or flt.year_max is not None:
