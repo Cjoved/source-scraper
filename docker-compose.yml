@@ -21,8 +21,6 @@ services:
     container_name: source-scraper-api
     command:
       [
-        "uv",
-        "run",
         "uvicorn",
         "main:app",
         "--host",
@@ -60,8 +58,6 @@ services:
       - ui
     command:
       [
-        "uv",
-        "run",
         "chainlit",
         "run",
         "src/agent/ui_chainlit.py",
@@ -87,7 +83,7 @@ services:
     build:
       context: .
     container_name: source-scraper-scheduler
-    command: ["uv", "run", "python", "-m", "src.orchestrator", "serve"]
+    command: ["python", "-m", "src.orchestrator", "serve"]
     profiles:
       - scheduler
     env_file:
