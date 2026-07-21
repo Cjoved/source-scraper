@@ -226,6 +226,33 @@ Also optional:
 ### `AGENT_MAX_TOOL_CALLS` — OPTIONAL (default `4`, max `8`)
 ### `AGENT_DEFAULT_MODE` — OPTIONAL (`tasklist` or `chat`)
 ### `AGENT_SUMMARIZE_MAX_ROWS` — OPTIONAL (default `10000`)
+### `AGENT_LLM_PLANNER` — OPTIONAL (default `true`)
+- When `true`, the agent uses one structured LLM PlanAgent call (`AgentPlan` / `PlanStep`) as the authority for which tools to run (up to `AGENT_PLAN_MAX_STEPS`).
+- On planner JSON/timeout failure, falls back to the legacy keyword intent plan and emits warning `plan_llm_fallback`.
+- Set `false` to force keyword intent routing only (useful for deterministic tests).
+
+### `AGENT_PLAN_MAX_STEPS` — OPTIONAL (default `3`, max `5`)
+- Cap on validated plan steps from the LLM planner (compound questions may use 2–3 steps).
+
+### `AGENT_PLAN_REWRITE` — OPTIONAL (default `true`)
+- When `true`, allows **Stage-2** LLM multi-query escalate only if Stage-1 corpus retrieval looks weak (0 hits, low top score, or vague listing with few hits).
+- Deterministic rewrite always runs first for corpus plans; LLM rewrite is **not** always-on.
+- Set `false` to keep Stage-1 only (lower latency).
+
+### `AGENT_PLAN_MAX_QUERIES` — OPTIONAL (default `3`, max `5`)
+- Cap on Stage-2 corpus multi-query fanout when escalate runs.
+- Hits are merged with Reciprocal Rank Fusion (RRF) + document dedupe, then FlashRank when enabled.
+
+### `AGENT_CASCADE_MIN_SCORE` — OPTIONAL (default `0.15`)
+- If Stage-1 top hit score is below this, escalate to Stage-2 (when rewrite enabled).
+
+### `AGENT_RERANK_ENABLED` — OPTIONAL (default `true`)
+- Local FlashRank reranker after hybrid retrieval for corpus `relevance` and yield/price knowledge searches.
+- Skipped for corpus `sort_by=latest` (date order stays authoritative).
+- Fail-open: if FlashRank is missing/unavailable, original order is kept.
+
+### `AGENT_RERANK_CANDIDATES` — OPTIONAL (default `4`)
+- Over-fetch multiplier before rerank (e.g. limit 5 → fetch up to 20, rerank to 5).
 
 ---
 
@@ -509,6 +536,13 @@ AGENT_TIMEOUT_SECONDS=60
 AGENT_MAX_TOOL_CALLS=4
 AGENT_DEFAULT_MODE=tasklist
 AGENT_SUMMARIZE_MAX_ROWS=10000
+AGENT_LLM_PLANNER=true
+AGENT_PLAN_MAX_STEPS=3
+AGENT_PLAN_REWRITE=true
+AGENT_PLAN_MAX_QUERIES=3
+AGENT_CASCADE_MIN_SCORE=0.15
+AGENT_RERANK_ENABLED=true
+AGENT_RERANK_CANDIDATES=4
 
 JWT_AUTH_ENABLED=false
 JWT_REQUIRED_FOR_AGENT=false

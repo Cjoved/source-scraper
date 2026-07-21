@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from src.agent.intent import infer_farmer_intent
+from src.agent.intent import infer_farmer_intent, infer_reply_language, is_taglish
+from src.api.schemas import AgentSessionState
 
 
 class AgentIntentSourceScopeTests(unittest.TestCase):
@@ -54,6 +55,50 @@ class AgentIntentSourceScopeTests(unittest.TestCase):
             source_ids=["irri"],
         )
         self.assertEqual(result.recommended_source_ids, ["irri"])
+
+    def test_available_crops_question_is_metadata_query(self) -> None:
+        result = infer_farmer_intent(
+            message="Ano pa ang crops na available sa data?",
+            user_type="farmer",
+            location=None,
+            crop=None,
+            language=None,
+            source_ids=None,
+        )
+        self.assertEqual(result.intent, "metadata_query")
+
+
+    def test_carried_location_from_session_when_message_has_no_province(self) -> None:
+        result = infer_farmer_intent(
+            message="Magkano ulit?",
+            user_type="farmer",
+            location=None,
+            crop=None,
+            language=None,
+            source_ids=None,
+            session=AgentSessionState(
+                location="Nueva Ecija",
+                last_intent="price_query",
+            ),
+        )
+
+        self.assertEqual(result.intent, "price_query")
+        self.assertEqual(result.location, "Nueva Ecija")
+        self.assertIsNone(result.clarification_question)
+
+    def test_infer_reply_language_prefers_taglish_from_message(self) -> None:
+        self.assertEqual(
+            infer_reply_language("Kailan na-upload yung article?", explicit_language="en"),
+            "taglish",
+        )
+        self.assertEqual(
+            infer_reply_language("may news ba tayo regarding sa drone?", explicit_language="en"),
+            "taglish",
+        )
+
+    def test_is_taglish_detects_tagalog_markers(self) -> None:
+        self.assertTrue(is_taglish(None, "Ano ang petsa nito?"))
+        self.assertFalse(is_taglish("en", "When was this published?"))
 
 
 if __name__ == "__main__":

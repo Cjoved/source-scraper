@@ -5,23 +5,58 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.agent.client import AgentClientError, create_chat_model
-from src.agent.intent import FarmerIntentResult, infer_farmer_intent
-from src.agent.prompts import build_agent_messages
+from src.agent.follow_up import (
+    CorpusFollowUp,
+    DataFollowUp,
+    conversation_tail_context,
+    looks_like_data_continuation,
+    merge_data_follow_up_args,
+    resolve_corpus_follow_up,
+    resolve_data_follow_up,
+)
+from src.agent.intent import FarmerIntentResult, infer_farmer_intent, infer_reply_language, is_taglish
+from src.agent.plan_agent import (
+    SearchPlan,
+    ValidatedAgentPlan,
+    build_forced_tool_args,
+    build_search_plan,
+    is_weak_corpus_result,
+    llm_build_agent_plan,
+    merge_corpus_results_rrf,
+    normalize_tool_args_with_plan,
+    rerank_merged_corpus_result,
+    rewrite_corpus_queries_with_llm,
+    validate_agent_plan,
+    validated_plan_from_search_plan,
+)
+from src.agent.prompts import (
+    build_agent_messages,
+    build_corpus_results_messages,
+    build_metadata_follow_up_messages,
+)
+from src.agent.session_state import (
+    resolve_session_state,
+    session_state_context_text,
+    update_session_state,
+)
 from src.agent.query_planner import AgentQueryPlan, build_query_plan, query_plan_text
 from src.agent.tools import ToolExecutionContext, ToolExecutionResult, build_agent_tools
+from src.api.price_metadata_cache import PriceMetadataSnapshot
 from src.api.schemas import (
     AgentConfidence,
     AgentChatRequest,
     AgentChatResponse,
     AgentMode,
+    AgentSessionState,
     AgentSource,
     AgentTask,
     AgentToolCall,
@@ -34,7 +69,7 @@ if TYPE_CHECKING:
     from src.api.auth import AuthScope, CurrentUser
 
 
-DETERMINISTIC_TOOLS = {"summarize_yield", "summarize_prices"}
+DETERMINISTIC_TOOLS = {"summarize_yield", "summarize_prices", "list_openstat_commodities"}
 SEARCH_TOOLS = {"search_corpus", "search_yield_knowledge", "search_prices"}
 PRICE_TOOLS = {"summarize_prices", "search_prices"}
 YIELD_TOOLS = {"summarize_yield", "search_yield_knowledge"}
@@ -156,6 +191,63 @@ def _warning(code: str, message: str) -> AgentWarning:
     return AgentWarning(code=code, message=message)
 
 
+def _finalize_session_state(
+    resolved_session: AgentSessionState,
+    *,
+    query_plan: AgentQueryPlan | None = None,
+    tool_calls: list[AgentToolCall] | None = None,
+    sources: list[AgentSource] | None = None,
+    source_ids: list[str] | None = None,
+) -> AgentSessionState:
+    if query_plan is None:
+        return resolved_session
+    return update_session_state(
+        resolved_session,
+        query_plan=query_plan,
+        tool_calls=tool_calls or [],
+        sources=sources or [],
+        source_ids=source_ids,
+    )
+
+
+def _apply_data_follow_up(
+    validated: ValidatedAgentPlan,
+    *,
+    data_follow_up: DataFollowUp,
+    message: str,
+) -> ValidatedAgentPlan:
+    query_plan = validated.query_plan
+    farmer_context = validated.farmer_context
+    base_args = build_forced_tool_args(
+        tool_name=data_follow_up.tool_name,
+        message=message,
+        query_plan=query_plan,
+    )
+    merged_args = merge_data_follow_up_args(base_args, data_follow_up)
+    search_queries: list[str] = []
+    if data_follow_up.tool_name in {"search_prices", "search_yield_knowledge"}:
+        search_queries = [str(merged_args.get("query") or message)]
+    plan = SearchPlan(
+        intent=query_plan.intent,
+        tool_name=data_follow_up.tool_name,
+        tool_args=merged_args,
+        search_queries=search_queries,
+        source_ids=list(query_plan.source_ids) if query_plan.source_ids else None,
+        skip_retrieval=False,
+        query_plan=query_plan,
+        farmer_context=farmer_context,
+        warnings=list(validated.warnings),
+        allow_cascade_escalate=validated.allow_cascade_escalate,
+        cascade_max_queries=validated.cascade_max_queries,
+    )
+    return replace(
+        validated,
+        skip_retrieval=False,
+        search_plans=[plan],
+        planned_tool_names=frozenset({data_follow_up.tool_name}) | validated.planned_tool_names,
+    )
+
+
 def _parse_model_output(raw: str, *, mode: AgentMode, body: AgentChatRequest) -> ParsedModelOutput:
     text = _strip_code_fence(raw).strip()
     warnings: list[AgentWarning] = []
@@ -231,10 +323,18 @@ def _confidence(
     tool_calls: list[AgentToolCall],
     sources: list[AgentSource],
     warnings: list[AgentWarning],
+    corpus_follow_up: bool = False,
+    follow_up_sources: list[AgentSource] | None = None,
 ) -> AgentConfidence:
     warning_codes = {warning.code for warning in warnings}
     if warning_codes & SEVERE_WARNING_CODES:
         return AgentConfidence.LOW
+    if corpus_follow_up and follow_up_sources:
+        dated = [source for source in follow_up_sources if source.published_date]
+        if dated:
+            return AgentConfidence.HIGH if len(dated) == len(follow_up_sources) else AgentConfidence.MEDIUM
+        if follow_up_sources:
+            return AgentConfidence.MEDIUM
     if any(call.name in DETERMINISTIC_TOOLS and call.result_count > 0 for call in tool_calls):
         return AgentConfidence.HIGH
     if sources and any(call.name in SEARCH_TOOLS and call.result_count > 0 for call in tool_calls):
@@ -406,7 +506,29 @@ def _maybe_ungrounded_answer(
     tool_calls: list[AgentToolCall],
     sources: list[AgentSource],
     warnings: list[AgentWarning],
+    query_plan: AgentQueryPlan | None = None,
+    message: str = "",
+    session: AgentSessionState | None = None,
 ) -> str:
+    if (
+        query_plan is not None
+        and query_plan.intent in {"price_query", "yield_query"}
+        and not tool_calls
+        and session is not None
+        and session.last_tool_name in PRICE_TOOLS | YIELD_TOOLS
+        and looks_like_data_continuation(message, session)
+    ):
+        if not _has_warning(warnings, "context_follow_up_no_data"):
+            warnings.append(
+                _warning(
+                    "context_follow_up_no_data",
+                    "Referential price/yield follow-up had no fresh tool data; blocked ungrounded answer.",
+                )
+            )
+        return (
+            "Walang fresh data mula sa database para sa follow-up na ito. "
+            "Subukan ulit o sabihin ang province at crop."
+        )
     if sources:
         return answer
     if any(call.name == "search_corpus" and call.result_count > 0 for call in tool_calls):
@@ -422,6 +544,244 @@ def _maybe_ungrounded_answer(
             "bilang source. Subukan magbigay ng mas specific na topic o source."
         )
     return answer
+
+
+def _should_use_corpus_title_answer(
+    *,
+    query_plan: AgentQueryPlan,
+    tool_calls: list[AgentToolCall],
+    sources: list[AgentSource],
+    corpus_follow_up: bool = False,
+    message: str = "",
+) -> bool:
+    if corpus_follow_up:
+        return False
+    if query_plan.intent not in {"news_query", "paper_query", "mixed"}:
+        return False
+    if not sources:
+        return False
+    return any(call.name == "search_corpus" and call.result_count > 0 for call in tool_calls)
+
+
+def _corpus_item_title(source: AgentSource) -> str:
+    for value in (source.title, source.filename):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "Untitled"
+
+
+def _brief_snippet_hint(snippet: str | None, *, taglish: bool, max_len: int = 140) -> str | None:
+    if not snippet or not snippet.strip():
+        return None
+    text = re.sub(r"\s+", " ", snippet.strip())
+    sentence = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0]
+    if len(sentence) > max_len:
+        sentence = sentence[: max_len - 3].rstrip() + "..."
+    return sentence
+
+
+def _format_corpus_title_answer(
+    sources: list[AgentSource],
+    *,
+    intent: str,
+    language: str,
+    message: str = "",
+) -> str:
+    """Fallback corpus listing: farmer-friendly intro + exact titles + snippet hints."""
+    taglish = is_taglish(language, message)
+    count = len(sources)
+    if intent == "paper_query":
+        intro = (
+            f"Oo, may {count} papel/publication sa database natin na related sa hinahanap mo:"
+            if taglish
+            else f"Yes, we found {count} paper(s)/publication(s) related to your question:"
+        )
+    else:
+        intro = (
+            f"Oo, may {count} balita sa database natin na related sa hinahanap mo:"
+            if taglish
+            else f"Yes, we found {count} news item(s) related to your question:"
+        )
+
+    lines = [intro, ""]
+    for index, source in enumerate(sources, start=1):
+        lines.append(f"{index}. {_corpus_item_title(source)}")
+        hint = _brief_snippet_hint(source.snippet, taglish=taglish)
+        if hint:
+            lines.append(f"   → {hint}")
+        if source.url:
+            lines.append(f"   {source.url}")
+        if source.source_id:
+            lines.append(f"   ({source.source_id})")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _corpus_results_facts_block(sources: list[AgentSource]) -> str:
+    payload = [
+        {
+            "index": index,
+            "title": _corpus_item_title(source),
+            "published_date": source.published_date,
+            "url": source.url,
+            "source_id": source.source_id,
+            "snippet": (source.snippet or "")[:500] or None,
+        }
+        for index, source in enumerate(sources, start=1)
+    ]
+    return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _format_corpus_results_answer_hybrid(
+    model: Any,
+    *,
+    body: AgentChatRequest,
+    sources: list[AgentSource],
+    language: str,
+    intent: str,
+) -> str:
+    facts_json = _corpus_results_facts_block(sources)
+    try:
+        response = model.invoke(
+            build_corpus_results_messages(
+                user_question=body.message,
+                facts_json=facts_json,
+                language=language,
+                intent=intent,
+            )
+        )
+        raw = _content_to_text(getattr(response, "content", response))
+        parsed = _parse_model_output(raw, mode=AgentMode.CHAT, body=body)
+        if parsed.answer.strip():
+            return parsed.answer.strip()
+    except Exception:
+        pass
+    return _format_corpus_title_answer(
+        sources,
+        intent=intent,
+        language=language,
+        message=body.message,
+    )
+
+
+def _format_corpus_metadata_answer(
+    sources: list[AgentSource],
+    *,
+    field: str = "date",
+    language: str,
+    message: str = "",
+) -> str:
+    taglish = is_taglish(language, message)
+    missing = "Hindi available ang petsa sa index" if taglish else "Date not available in database"
+
+    if field == "date" and len(sources) == 1:
+        source = sources[0]
+        title = _corpus_item_title(source)
+        value = source.published_date or missing
+        if taglish:
+            return f"Na-post noong {value} ang {title}."
+        return f"Published on {value}: {title}."
+
+    if field == "date":
+        intro = (
+            "Narito ang mga petsa ng mga balitang tinukoy:"
+            if taglish
+            else "Here are the dates for the referenced news items:"
+        )
+    else:
+        intro = (
+            "Narito ang mga detalye mula sa mga tinukoy na source:"
+            if taglish
+            else "Here are the details for the referenced sources:"
+        )
+        missing = "Hindi available sa database" if taglish else "Not available in database"
+
+    lines = [intro, ""]
+    for index, source in enumerate(sources, start=1):
+        title = _corpus_item_title(source)
+        if field == "date":
+            value = source.published_date or missing
+            lines.append(f"{index}. {title} — {value}")
+        else:
+            lines.append(f"{index}. {title}")
+        if source.url:
+            lines.append(f"   {source.url}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _metadata_facts_block(sources: list[AgentSource]) -> str:
+    payload = [
+        {
+            "index": index,
+            "title": _corpus_item_title(source),
+            "published_date": source.published_date,
+            "url": source.url,
+            "source_id": source.source_id,
+        }
+        for index, source in enumerate(sources, start=1)
+    ]
+    return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _format_metadata_answer_hybrid(
+    model: Any,
+    *,
+    body: AgentChatRequest,
+    sources: list[AgentSource],
+    language: str,
+) -> str:
+    facts_json = _metadata_facts_block(sources)
+    try:
+        response = model.invoke(
+            build_metadata_follow_up_messages(
+                user_question=body.message,
+                facts_json=facts_json,
+                language=language,
+            )
+        )
+        raw = _content_to_text(getattr(response, "content", response))
+        parsed = _parse_model_output(raw, mode=AgentMode.CHAT, body=body)
+        if parsed.answer.strip():
+            return parsed.answer.strip()
+    except Exception:
+        pass
+    return _format_corpus_metadata_answer(
+        sources,
+        field="date",
+        language=language,
+        message=body.message,
+    )
+
+
+def _prior_sources_context(
+    sources: list[AgentSource],
+    history: list | None = None,
+) -> str:
+    lines = [
+        (
+            "Prior assistant sources for this follow-up. Read the recent conversation and infer "
+            "which numbered item(s) the user means. Answer in the user's language. "
+            "Use only facts from these sources — do not run a new search unless asked."
+        ),
+        "",
+    ]
+    if history:
+        tail = conversation_tail_context(history)
+        if tail:
+            lines.extend([tail, ""])
+    for index, source in enumerate(sources, start=1):
+        bits = [f"{index}. {_corpus_item_title(source)}"]
+        if source.published_date:
+            bits.append(f"date={source.published_date}")
+        if source.url:
+            bits.append(f"url={source.url}")
+        if source.source_id:
+            bits.append(f"source_id={source.source_id}")
+        if source.snippet:
+            bits.append(f"snippet={source.snippet[:800]}")
+        lines.append(" | ".join(bits))
+    return "\n".join(lines)
 
 
 def _tool_cache_key(name: str, args: dict[str, Any]) -> str:
@@ -458,6 +818,15 @@ def _tool_allowed_for_family(name: str, active_family: str | None) -> bool:
     if active_family == "yield":
         return name in YIELD_TOOLS
     return True
+
+
+def _tool_allowed_for_planned(name: str, planned_tool_names: frozenset[str]) -> bool:
+    """Soft scope: lock follow-up tools to the plan's single family; allow mixed plans."""
+    families = {_tool_family(tool) for tool in planned_tool_names}
+    families.discard(None)
+    if len(families) != 1:
+        return True
+    return _tool_allowed_for_family(name, next(iter(families)))
 
 
 def _best_tool_answer(
@@ -502,6 +871,27 @@ def _best_tool_answer(
             f"Nakakuha ako ng deterministic price summary gamit ang filters {best.arguments}. "
             f"May {best.result_count} matching row(s). Tingnan ang `sources` at `tool_calls` para sa detalye."
         )
+    if best.name == "list_openstat_commodities":
+        payload = best_result.payload if best_result is not None else {}
+        types = payload.get("commodity_types") if isinstance(payload, dict) else None
+        by_type = payload.get("commodities_by_type") if isinstance(payload, dict) else None
+        if not isinstance(types, list) or not isinstance(by_type, dict) or not types:
+            return (
+                "Walang nahanap na OpenSTAT commodity catalog sa indexed price data."
+            )
+        lines = [
+            "Ito ang mga crop/commodity na may OpenSTAT farmgate price data sa index natin:",
+        ]
+        for ctype in types[:12]:
+            items = by_type.get(ctype, [])
+            if not isinstance(items, list):
+                continue
+            sample = ", ".join(str(item) for item in items[:8])
+            extra = f" (+{len(items) - 8} pa)" if len(items) > 8 else ""
+            lines.append(f"- **{ctype}** ({len(items)}): {sample}{extra}")
+        if len(types) > 12:
+            lines.append(f"- ... at {len(types) - 12} commodity type(s) pa")
+        return "\n".join(lines)
     return (
         f"Nakahanap ako ng {best.result_count} matching result(s) gamit ang `{best.name}`. "
         "Tingnan ang `sources` at `tool_calls` para sa detalye."
@@ -529,6 +919,7 @@ def _tool_backed_fallback_response(
     tool_calls: list[AgentToolCall],
     tool_results: list[ToolExecutionResult],
     sources: list[AgentSource],
+    session_state: AgentSessionState | None = None,
 ) -> AgentChatResponse | None:
     answer = _best_tool_answer(tool_calls, tool_results)
     if not answer:
@@ -541,6 +932,7 @@ def _tool_backed_fallback_response(
         sources=deduped_sources,
         warnings=warnings,
         confidence=_confidence(tool_calls=tool_calls, sources=deduped_sources, warnings=warnings),
+        session_state=session_state or AgentSessionState(),
         took_ms=round((time.perf_counter() - started) * 1000, 2),
     )
 
@@ -553,6 +945,7 @@ def _fallback_response(
     started: float,
     tool_calls: list[AgentToolCall] | None = None,
     sources: list[AgentSource] | None = None,
+    session_state: AgentSessionState | None = None,
 ) -> AgentChatResponse:
     if mode == AgentMode.TASKLIST:
         answer = (
@@ -573,6 +966,7 @@ def _fallback_response(
         sources=sources or [],
         warnings=warnings,
         confidence=AgentConfidence.LOW,
+        session_state=session_state or AgentSessionState(),
         took_ms=round((time.perf_counter() - started) * 1000, 2),
     )
 
@@ -630,17 +1024,9 @@ def _extract_tool_calls(message: object) -> list[tuple[str, dict[str, Any], str]
 
 
 def _latest_requested(message: str) -> bool:
-    text = message.lower()
-    markers = (
-        "latest",
-        "newest",
-        "recent",
-        "pinakabago",
-        "pinaka bago",
-        "bagong balita",
-        "latest news",
-    )
-    return any(marker in text for marker in markers)
+    from src.agent.plan_agent import latest_requested
+
+    return latest_requested(message)
 
 
 def _normalize_tool_args(
@@ -649,37 +1035,314 @@ def _normalize_tool_args(
     body: AgentChatRequest,
     query_plan: AgentQueryPlan,
 ) -> dict[str, Any]:
-    normalized = dict(args)
-    if name == "search_corpus":
-        if query_plan.source_ids:
-            normalized["source_ids"] = query_plan.source_ids
-        if _latest_requested(body.message) and not normalized.get("sort_by"):
-            normalized["sort_by"] = "latest"
-    if name in {"search_prices", "summarize_prices"}:
-        if query_plan.location:
-            normalized["geolocation"] = query_plan.location
-        if query_plan.commodity:
-            normalized["commodity"] = query_plan.commodity
-        if query_plan.date_range.year_min is not None:
-            normalized["year_min"] = query_plan.date_range.year_min
-        if query_plan.date_range.year_max is not None:
-            normalized["year_max"] = query_plan.date_range.year_max
-        if query_plan.date_range.month:
-            normalized["month"] = query_plan.date_range.month
-        if name == "search_prices" and not normalized.get("query"):
-            normalized["query"] = body.message
-    if name in {"search_yield_knowledge", "summarize_yield"}:
-        if query_plan.location and not any(
-            normalized.get(key) for key in ("region", "province", "municipality")
-        ):
-            normalized["province"] = query_plan.location
-        if query_plan.date_range.year_min is not None:
-            normalized["year_min"] = query_plan.date_range.year_min
-        if query_plan.date_range.year_max is not None:
-            normalized["year_max"] = query_plan.date_range.year_max
-        if name == "search_yield_knowledge" and not normalized.get("query"):
-            normalized["query"] = body.message
-    return normalized
+    return normalize_tool_args_with_plan(
+        name,
+        args,
+        message=body.message,
+        query_plan=query_plan,
+    )
+
+
+def _record_tool_result(
+    *,
+    tool_result: ToolExecutionResult,
+    request_args: dict[str, Any],
+    call_id: str,
+    messages: list[BaseMessage],
+    tool_call_records: list[AgentToolCall],
+    tool_results: list[ToolExecutionResult],
+    sources: list[AgentSource],
+    tool_result_cache: dict[str, ToolExecutionResult],
+) -> None:
+    cache_key = _tool_cache_key(tool_result.name, request_args)
+    tool_call_records.append(
+        AgentToolCall(
+            name=tool_result.name,
+            arguments=tool_result.arguments,
+            summary=tool_result.summary,
+            result_count=tool_result.result_count,
+        )
+    )
+    sources.extend(tool_result.sources)
+    tool_results.append(tool_result)
+    tool_result_cache[cache_key] = tool_result
+    messages.append(
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": call_id,
+                    "name": tool_result.name,
+                    "args": request_args,
+                }
+            ],
+        )
+    )
+    messages.append(_tool_message(call_id, tool_result))
+
+
+def _execute_search_plan(
+    *,
+    search_plan: SearchPlan,
+    tool_by_name: dict[str, BaseTool],
+    messages: list[BaseMessage],
+    tool_call_records: list[AgentToolCall],
+    tool_results: list[ToolExecutionResult],
+    sources: list[AgentSource],
+    tool_result_cache: dict[str, ToolExecutionResult],
+    warnings: list[AgentWarning],
+    remaining_tool_calls: int,
+    model: Any | None = None,
+    body_message: str = "",
+    cascade_min_score: float = 0.15,
+    rerank_enabled: bool = True,
+) -> int:
+    """Force-execute the planned tool(s). Returns remaining tool-call budget."""
+    if (
+        search_plan.skip_retrieval
+        or search_plan.tool_name == "none"
+        or remaining_tool_calls <= 0
+    ):
+        return remaining_tool_calls
+
+    tool = tool_by_name.get(search_plan.tool_name)
+    if tool is None:
+        warnings.append(
+            _warning(
+                "plan_tool_unavailable",
+                f"Planned tool `{search_plan.tool_name}` is unavailable (store missing?).",
+            )
+        )
+        return remaining_tool_calls
+
+    if search_plan.tool_name == "search_corpus":
+        return _execute_corpus_cascade(
+            search_plan=search_plan,
+            tool=tool,
+            messages=messages,
+            tool_call_records=tool_call_records,
+            tool_results=tool_results,
+            sources=sources,
+            tool_result_cache=tool_result_cache,
+            warnings=warnings,
+            remaining_tool_calls=remaining_tool_calls,
+            model=model,
+            body_message=body_message,
+            cascade_min_score=cascade_min_score,
+            rerank_enabled=rerank_enabled,
+        )
+
+    args = dict(search_plan.tool_args)
+    try:
+        tool_result = tool.invoke(args)
+        if not isinstance(tool_result, ToolExecutionResult):
+            raise TypeError("Tool returned an unexpected result type.")
+    except Exception as exc:
+        code = "qdrant_unavailable" if _is_qdrant_exception(exc) else "tool_execution_failed"
+        warnings.append(
+            _warning(
+                code,
+                (
+                    f"Planned tool {search_plan.tool_name} could not reach Qdrant "
+                    f"({exc.__class__.__name__})."
+                    if code == "qdrant_unavailable"
+                    else (
+                        f"Planned tool {search_plan.tool_name} failed "
+                        f"({exc.__class__.__name__})."
+                    )
+                ),
+            )
+        )
+        return remaining_tool_calls - 1
+
+    _record_tool_result(
+        tool_result=tool_result,
+        request_args=args,
+        call_id="plan_0",
+        messages=messages,
+        tool_call_records=tool_call_records,
+        tool_results=tool_results,
+        sources=sources,
+        tool_result_cache=tool_result_cache,
+    )
+    return remaining_tool_calls - 1
+
+
+def _execute_corpus_cascade(
+    *,
+    search_plan: SearchPlan,
+    tool: BaseTool,
+    messages: list[BaseMessage],
+    tool_call_records: list[AgentToolCall],
+    tool_results: list[ToolExecutionResult],
+    sources: list[AgentSource],
+    tool_result_cache: dict[str, ToolExecutionResult],
+    warnings: list[AgentWarning],
+    remaining_tool_calls: int,
+    model: Any | None,
+    body_message: str,
+    cascade_min_score: float,
+    rerank_enabled: bool,
+) -> int:
+    """Stage-1 single search; escalate to LLM multi-query only when weak."""
+    primary_args = dict(search_plan.tool_args)
+    primary_query = str(primary_args.get("query") or (search_plan.search_queries[0] if search_plan.search_queries else body_message))
+    limit = int(primary_args.get("limit") or 5)
+    sort_by = primary_args.get("sort_by")
+    if isinstance(sort_by, str):
+        sort_by_value = sort_by
+    else:
+        sort_by_value = None
+
+    try:
+        stage1 = tool.invoke(primary_args)
+        if not isinstance(stage1, ToolExecutionResult):
+            raise TypeError("Tool returned an unexpected result type.")
+    except Exception as exc:
+        code = "qdrant_unavailable" if _is_qdrant_exception(exc) else "tool_execution_failed"
+        warnings.append(
+            _warning(
+                code,
+                (
+                    f"Planned tool search_corpus could not reach Qdrant ({exc.__class__.__name__})."
+                    if code == "qdrant_unavailable"
+                    else f"Planned tool search_corpus failed ({exc.__class__.__name__})."
+                ),
+            )
+        )
+        return remaining_tool_calls - 1
+
+    remaining_tool_calls -= 1
+    tool_result_cache[_tool_cache_key(stage1.name, primary_args)] = stage1
+    final_result = stage1
+
+    weak = is_weak_corpus_result(
+        stage1,
+        min_score=cascade_min_score,
+        limit=limit,
+        message=body_message,
+        search_query=primary_query,
+        sort_by=sort_by_value,
+    )
+    can_escalate = (
+        weak
+        and search_plan.allow_cascade_escalate
+        and model is not None
+        and search_plan.cascade_max_queries > 1
+        and remaining_tool_calls > 0
+    )
+
+    if can_escalate:
+        rewritten = rewrite_corpus_queries_with_llm(
+            model,
+            message=body_message,
+            query_plan=search_plan.query_plan,
+            farmer_context=search_plan.farmer_context,
+            primary_query=primary_query,
+            max_queries=search_plan.cascade_max_queries,
+        )
+        queries: list[str] = [primary_query]
+        if rewritten:
+            for item in rewritten:
+                cleaned = str(item).strip()
+                if cleaned and cleaned.lower() not in {q.lower() for q in queries}:
+                    queries.append(cleaned)
+                if len(queries) >= search_plan.cascade_max_queries:
+                    break
+        else:
+            warnings.append(
+                _warning(
+                    "plan_rewrite_fallback",
+                    "Corpus query rewrite failed; kept Stage-1 results only.",
+                )
+            )
+            queries = [primary_query]
+
+        if len(queries) > 1:
+            corpus_results: list[ToolExecutionResult] = [stage1]
+            for query in queries[1:]:
+                if remaining_tool_calls <= 0:
+                    break
+                args = build_forced_tool_args(
+                    tool_name="search_corpus",
+                    message=body_message,
+                    query_plan=search_plan.query_plan,
+                    search_query=query,
+                )
+                if primary_args.get("sort_by"):
+                    args["sort_by"] = primary_args["sort_by"]
+                if primary_args.get("source_ids"):
+                    args["source_ids"] = primary_args["source_ids"]
+                args["limit"] = limit
+                try:
+                    tool_result = tool.invoke(args)
+                    if not isinstance(tool_result, ToolExecutionResult):
+                        raise TypeError("Tool returned an unexpected result type.")
+                except Exception as exc:
+                    code = (
+                        "qdrant_unavailable"
+                        if _is_qdrant_exception(exc)
+                        else "tool_execution_failed"
+                    )
+                    warnings.append(
+                        _warning(
+                            code,
+                            f"Stage-2 search_corpus failed ({exc.__class__.__name__}).",
+                        )
+                    )
+                    remaining_tool_calls -= 1
+                    continue
+                corpus_results.append(tool_result)
+                tool_result_cache[_tool_cache_key(tool_result.name, args)] = tool_result
+                remaining_tool_calls -= 1
+
+            if len(corpus_results) > 1:
+                merged = merge_corpus_results_rrf(corpus_results, limit=max(limit * 4, limit))
+                final_result = rerank_merged_corpus_result(
+                    merged,
+                    query=primary_query,
+                    limit=limit,
+                    enabled=rerank_enabled and sort_by_value != "latest",
+                )
+                warnings.append(
+                    _warning(
+                        "cascade_escalated",
+                        "Stage-1 corpus retrieval looked weak; ran Stage-2 multi-query + rerank.",
+                    )
+                )
+            else:
+                warnings.append(
+                    _warning(
+                        "cascade_skipped",
+                        "Stage-1 was weak but Stage-2 produced no extra corpus results.",
+                    )
+                )
+        else:
+            warnings.append(
+                _warning(
+                    "cascade_skipped",
+                    "Stage-1 was weak but no additional rewrite queries were available.",
+                )
+            )
+    elif weak and not search_plan.allow_cascade_escalate:
+        warnings.append(
+            _warning(
+                "cascade_skipped",
+                "Stage-1 corpus retrieval looked weak; escalate disabled by AGENT_PLAN_REWRITE.",
+            )
+        )
+
+    _record_tool_result(
+        tool_result=final_result,
+        request_args=primary_args,
+        call_id="plan_0",
+        messages=messages,
+        tool_call_records=tool_call_records,
+        tool_results=tool_results,
+        sources=sources,
+        tool_result_cache=tool_result_cache,
+    )
+    return remaining_tool_calls
 
 
 def _farmer_context_text(result: FarmerIntentResult) -> str:
@@ -750,6 +1413,8 @@ def run_agent_chat(
     store: QdrantStoreProtocol | None = None,
     api_scope: object | None = None,
     current_user: object | None = None,
+    price_metadata: PriceMetadataSnapshot | None = None,
+    openstat_csv_path: Path | None = None,
 ) -> AgentChatResponse:
     started = time.perf_counter()
     mode = _resolve_mode(body, settings)
@@ -758,31 +1423,128 @@ def run_agent_chat(
     tool_results: list[ToolExecutionResult] = []
     sources: list[AgentSource] = []
     tool_result_cache: dict[str, ToolExecutionResult] = {}
+    resolved_session = resolve_session_state(body)
+    query_plan: AgentQueryPlan | None = None
 
     if not settings.agent_enabled:
         warnings.append(_warning("agent_disabled", "Agent is disabled by configuration."))
-        return _fallback_response(body=body, mode=mode, warnings=warnings, started=started)
+        return _fallback_response(
+            body=body,
+            mode=mode,
+            warnings=warnings,
+            started=started,
+            session_state=resolved_session,
+        )
 
     try:
         model = create_chat_model(settings)
     except AgentClientError as exc:
         warnings.append(_warning(exc.code, exc.message))
-        return _fallback_response(body=body, mode=mode, warnings=warnings, started=started)
+        return _fallback_response(
+            body=body,
+            mode=mode,
+            warnings=warnings,
+            started=started,
+            session_state=resolved_session,
+        )
 
     farmer_context = infer_farmer_intent(
         message=body.message,
         user_type=_effective_user_type(body, api_scope=api_scope, current_user=current_user),
-        location=body.location,
-        crop=body.crop,
-        language=body.language,
+        location=body.location or resolved_session.location,
+        crop=body.crop or resolved_session.crop,
+        language=body.language or resolved_session.language,
         source_ids=body.source_ids,
+        session=resolved_session,
     )
-    query_plan = build_query_plan(
-        message=body.message,
-        farmer_context=farmer_context,
-        source_ids=body.source_ids,
+    user_type = _effective_user_type(body, api_scope=api_scope, current_user=current_user)
+    validated: ValidatedAgentPlan | None = None
+    if settings.agent_llm_planner:
+        raw_plan = llm_build_agent_plan(
+            model,
+            message=body.message,
+            location=body.location,
+            crop=body.crop,
+            language=body.language or farmer_context.language,
+            source_ids=body.source_ids,
+            max_steps=settings.agent_plan_max_steps,
+        )
+        if raw_plan is not None:
+            validated = validate_agent_plan(
+                raw_plan,
+                message=body.message,
+                location=body.location,
+                crop=body.crop,
+                language=body.language or farmer_context.language,
+                source_ids=body.source_ids,
+                user_type=user_type or "farmer",
+                max_steps=settings.agent_plan_max_steps,
+                plan_rewrite=settings.agent_plan_rewrite,
+                plan_max_queries=settings.agent_plan_max_queries,
+            )
+        else:
+            warnings.append(
+                _warning(
+                    "plan_llm_fallback",
+                    "LLM structured planner failed; using legacy keyword intent plan.",
+                )
+            )
+
+    if validated is None:
+        query_plan = build_query_plan(
+            message=body.message,
+            farmer_context=farmer_context,
+            source_ids=body.source_ids,
+            session=resolved_session,
+        )
+        search_plan = build_search_plan(
+            message=body.message,
+            farmer_context=farmer_context,
+            query_plan=query_plan,
+            plan_rewrite=settings.agent_plan_rewrite,
+            plan_max_queries=settings.agent_plan_max_queries,
+            model=model,
+            session=resolved_session,
+        )
+        validated = validated_plan_from_search_plan(search_plan)
+
+    farmer_context = validated.farmer_context
+    query_plan = validated.query_plan
+    planned_tool_names = validated.planned_tool_names
+    warnings.extend(validated.warnings)
+    for step_plan in validated.search_plans:
+        warnings.extend(step_plan.warnings)
+
+    data_follow_up = resolve_data_follow_up(
+        body,
+        resolved_session,
+        current_intent=query_plan.intent,
     )
-    warnings.extend(query_plan.warnings)
+    if data_follow_up is not None:
+        validated = _apply_data_follow_up(
+            validated,
+            data_follow_up=data_follow_up,
+            message=body.message,
+        )
+        planned_tool_names = validated.planned_tool_names
+
+    corpus_follow_up: CorpusFollowUp | None = resolve_corpus_follow_up(body, resolved_session)
+
+    def _current_session(
+        *,
+        tc: list[AgentToolCall] | None = None,
+        src: list[AgentSource] | None = None,
+    ) -> AgentSessionState:
+        return _finalize_session_state(
+            resolved_session,
+            query_plan=query_plan,
+            tool_calls=tc if tc is not None else tool_call_records,
+            sources=src if src is not None else sources,
+            source_ids=query_plan.source_ids,
+        )
+    if corpus_follow_up is not None:
+        validated = replace(validated, skip_retrieval=True, search_plans=[])
+        sources = list(corpus_follow_up.sources)
 
     messages: list[BaseMessage] = build_agent_messages(
         message=body.message,
@@ -791,12 +1553,21 @@ def run_agent_chat(
         source_ids=body.source_ids,
         farmer_context=_farmer_context_text(farmer_context),
         query_plan_context=query_plan_text(query_plan),
+        session_state_context=session_state_context_text(resolved_session),
     )
+    if corpus_follow_up is not None:
+        sources = list(corpus_follow_up.sources)
+        messages.append(SystemMessage(content=_prior_sources_context(sources, body.history)))
+
     tools = (
         build_agent_tools(
             ToolExecutionContext(
                 store,
                 summarize_max_rows=settings.agent_summarize_max_rows,
+                rerank_enabled=settings.agent_rerank_enabled,
+                rerank_candidates=settings.agent_rerank_candidates,
+                price_metadata=price_metadata,
+                openstat_csv_path=openstat_csv_path,
             )
         )
         if store is not None
@@ -807,6 +1578,25 @@ def run_agent_chat(
     remaining_tool_calls = (
         body.max_tool_calls if body.max_tool_calls is not None else settings.agent_max_tool_calls
     )
+    if not validated.skip_retrieval:
+        for step_plan in validated.search_plans:
+            if remaining_tool_calls <= 0:
+                break
+            remaining_tool_calls = _execute_search_plan(
+                search_plan=step_plan,
+                tool_by_name=tool_by_name,
+                messages=messages,
+                tool_call_records=tool_call_records,
+                tool_results=tool_results,
+                sources=sources,
+                tool_result_cache=tool_result_cache,
+                warnings=warnings,
+                remaining_tool_calls=remaining_tool_calls,
+                model=model,
+                body_message=body.message,
+                cascade_min_score=settings.agent_cascade_min_score,
+                rerank_enabled=settings.agent_rerank_enabled,
+            )
 
     while True:
         try:
@@ -828,6 +1618,7 @@ def run_agent_chat(
                 tool_calls=tool_call_records,
                 tool_results=tool_results,
                 sources=_dedupe_sources(sources),
+                session_state=_current_session(src=_dedupe_sources(sources)),
             )
             if tool_backed is not None:
                 return tool_backed
@@ -838,6 +1629,7 @@ def run_agent_chat(
                 started=started,
                 tool_calls=tool_call_records,
                 sources=_dedupe_sources(sources),
+                session_state=_current_session(src=_dedupe_sources(sources)),
             )
 
         tool_calls = _extract_tool_calls(result)
@@ -857,6 +1649,7 @@ def run_agent_chat(
                     tool_calls=tool_call_records,
                     tool_results=tool_results,
                     sources=_dedupe_sources(sources),
+                    session_state=_current_session(src=_dedupe_sources(sources)),
                 )
                 if tool_backed is not None:
                     return tool_backed
@@ -867,6 +1660,7 @@ def run_agent_chat(
                     started=started,
                     tool_calls=tool_call_records,
                     sources=_dedupe_sources(sources),
+                    session_state=_current_session(src=_dedupe_sources(sources)),
                 )
 
             if isinstance(result, BaseMessage):
@@ -874,14 +1668,15 @@ def run_agent_chat(
 
             for name, args, call_id in tool_calls:
                 args = _normalize_tool_args(name, args, body, query_plan)
-                active_family = _active_tool_family(query_plan, tool_call_records)
-                if not _tool_allowed_for_family(name, active_family):
+                if not _tool_allowed_for_planned(name, planned_tool_names):
+                    active_family = _active_tool_family(query_plan, tool_call_records)
+                    scope = active_family or "planned"
                     warnings.append(
                         _warning(
                             "tool_scope_blocked",
                             (
                                 f"Blocked `{name}` because this request is scoped to "
-                                f"{active_family} data."
+                                f"{scope} data."
                             ),
                         )
                     )
@@ -891,7 +1686,7 @@ def run_agent_chat(
                                 {
                                     "error": (
                                         f"{name} is not relevant for a "
-                                        f"{active_family} data request."
+                                        f"{scope} data request."
                                     )
                                 }
                             ),
@@ -921,6 +1716,7 @@ def run_agent_chat(
                         tool_calls=tool_call_records,
                         tool_results=tool_results,
                         sources=_dedupe_sources(sources),
+                        session_state=_current_session(src=_dedupe_sources(sources)),
                     )
                     if tool_backed is not None:
                         return tool_backed
@@ -931,6 +1727,7 @@ def run_agent_chat(
                         started=started,
                         tool_calls=tool_call_records,
                         sources=_dedupe_sources(sources),
+                        session_state=_current_session(src=_dedupe_sources(sources)),
                     )
                 tool = tool_by_name.get(name)
                 if tool is None:
@@ -1003,6 +1800,7 @@ def run_agent_chat(
                 started=started,
                 tool_calls=tool_call_records,
                 sources=_dedupe_sources(sources),
+                session_state=_current_session(src=_dedupe_sources(sources)),
             )
         break
 
@@ -1015,6 +1813,7 @@ def run_agent_chat(
             started=started,
             tool_calls=tool_call_records,
             sources=_dedupe_sources(sources),
+            session_state=_current_session(src=_dedupe_sources(sources)),
         )
 
     grounded_sources = _dedupe_sources(
@@ -1032,7 +1831,30 @@ def run_agent_chat(
         tool_calls=tool_call_records,
         sources=grounded_sources,
         warnings=warnings,
+        query_plan=query_plan,
+        message=body.message,
+        session=resolved_session,
     )
+    if _should_use_corpus_title_answer(
+        query_plan=query_plan,
+        tool_calls=tool_call_records,
+        sources=grounded_sources,
+        corpus_follow_up=corpus_follow_up is not None,
+        message=body.message,
+    ):
+        title_intent = query_plan.intent if query_plan.intent != "mixed" else "news_query"
+        reply_language = infer_reply_language(
+            body.message,
+            body.language or farmer_context.language,
+            resolved_session.language,
+        )
+        answer = _format_corpus_results_answer_hybrid(
+            model,
+            body=body,
+            sources=grounded_sources,
+            language=reply_language,
+            intent=title_intent,
+        )
 
     return AgentChatResponse(
         answer=answer,
@@ -1044,6 +1866,9 @@ def run_agent_chat(
             tool_calls=tool_call_records,
             sources=grounded_sources,
             warnings=warnings,
+            corpus_follow_up=corpus_follow_up is not None,
+            follow_up_sources=grounded_sources if corpus_follow_up is not None else None,
         ),
+        session_state=_current_session(src=grounded_sources),
         took_ms=round((time.perf_counter() - started) * 1000, 2),
     )

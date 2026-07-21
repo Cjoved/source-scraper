@@ -8,11 +8,12 @@
 #   docker compose -f docker-compose.qdrant.yml logs -f qdrant
 #   docker compose -f docker-compose.qdrant.yml down
 #
-# App stack connection (from app containers on same host):
-#   DOCKER_QDRANT_URL=http://host.docker.internal:6333
+# App stack connection (same Docker host):
+#   Join network source-scraper-qdrant_default and set:
+#   DOCKER_QDRANT_URL=http://qdrant-vector-db:6333
 #
-# Ports bind to 127.0.0.1 only — not exposed on the LAN/public interface.
-# Remote app hosts should reach Qdrant via private VPC/firewall, not this compose file.
+# Ports bind to 127.0.0.1 only — host tools / SSH tunnel use localhost.
+# App containers must use the Docker network name above (not 127.0.0.1 / 172.17.0.1).
 #
 # Set the same secret in the app .env as QDRANT_API_KEY.
 # Generate: openssl rand -hex 32

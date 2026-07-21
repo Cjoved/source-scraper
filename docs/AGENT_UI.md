@@ -4,6 +4,30 @@ Phase 7 adds an optional Chainlit demo UI for `/v1/agent/chat`.
 
 This UI is intentionally thin. It calls the existing FastAPI endpoint and renders the response fields; it does not change agent behavior, persist conversations server-side, scrape data, index data, or write to Qdrant.
 
+## Backend plan → retrieve → answer
+
+The API agent (not Chainlit) runs an LLM structured Plan-and-Execute loop before synthesis:
+
+1. **LLM PlanAgent** (`AGENT_LLM_PLANNER=true`) — emits structured `AgentPlan` / steps; validators clamp tools, sources, dates, location.
+2. **Fallback** — if the planner fails, keyword `infer_farmer_intent` + `build_search_plan` runs (`plan_llm_fallback`).
+3. **Execute retrieval** — multi-step tools allowed; Stage-1 hybrid search + **FlashRank** (relevance); if weak and `AGENT_PLAN_REWRITE=true`, Stage-2 LLM multi-query + RRF + rerank.
+4. **Synthesize** — LLM drafts the answer from tool observations (follow-up tools scoped to planned families).
+5. **Ground** — news/paper (and mixed corpus) answers use **exact database titles/URLs**, not paraphrased headlines.
+
+Relevant env (API / `.env.api`):
+
+```env
+AGENT_LLM_PLANNER=true
+AGENT_PLAN_MAX_STEPS=3
+AGENT_PLAN_REWRITE=true
+AGENT_PLAN_MAX_QUERIES=3
+AGENT_CASCADE_MIN_SCORE=0.15
+AGENT_RERANK_ENABLED=true
+AGENT_RERANK_CANDIDATES=4
+```
+
+See also: [`src/agent/plan_schema.py`](../src/agent/plan_schema.py), [`src/agent/plan_agent.py`](../src/agent/plan_agent.py), [`src/services/rerank.py`](../src/services/rerank.py), [`docs/PRODUCTION_ENV.md`](PRODUCTION_ENV.md).
+
 ## Why Chainlit
 
 - Chainlit is built for chat-first AI apps and fits the agent's conversational flow.
@@ -159,6 +183,8 @@ The UI renders:
 - `took_ms`
 
 Conversation history is kept in Chainlit session state and trimmed before being sent to the API.
+
+**Multi-turn follow-ups:** The client must echo assistant `sources` from each API response into the next request's `history[]` (assistant turns). Without `history[].sources`, corpus date/metadata follow-ups ("kailan na-upload yung article?", "petsa nitong news") cannot reuse prior items. Optional `session_state` from the prior response should also be forwarded when using the agent session context feature.
 
 ## Tests
 

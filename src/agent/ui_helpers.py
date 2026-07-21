@@ -45,10 +45,10 @@ def parse_source_ids(raw: str | None) -> list[str] | None:
     return out or None
 
 
-def trim_history(history: list[dict[str, Any]], *, limit: int = MAX_UI_HISTORY) -> list[dict[str, str]]:
+def trim_history(history: list[dict[str, Any]], *, limit: int = MAX_UI_HISTORY) -> list[dict[str, Any]]:
     """Keep only valid user/assistant messages that fit the API contract."""
 
-    valid: list[dict[str, str]] = []
+    valid: list[dict[str, Any]] = []
     for item in history:
         role = item.get("role")
         content = item.get("content")
@@ -57,8 +57,42 @@ def trim_history(history: list[dict[str, Any]], *, limit: int = MAX_UI_HISTORY) 
         content = content.strip()
         if not content:
             continue
-        valid.append({"role": role, "content": content[:4000]})
+        entry: dict[str, Any] = {"role": role, "content": content[:4000]}
+        if role == "assistant":
+            sources = item.get("sources")
+            if isinstance(sources, list) and sources:
+                entry["sources"] = sources[:10]
+        valid.append(entry)
     return valid[-limit:]
+
+
+def trim_session_state(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Validate client session_state shape for API round-trip."""
+
+    if not isinstance(raw, dict):
+        return None
+    allowed = {
+        "location",
+        "crop",
+        "language",
+        "last_intent",
+        "last_tool_name",
+        "last_tool_args",
+        "last_source_ids",
+    }
+    out: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key not in allowed:
+            continue
+        if key == "last_tool_args" and not isinstance(value, dict):
+            continue
+        if key == "last_source_ids" and not isinstance(value, list):
+            continue
+        if key in {"location", "crop", "language", "last_intent", "last_tool_name"}:
+            if value is not None and not isinstance(value, str):
+                continue
+        out[key] = value
+    return out or None
 
 
 def build_agent_payload(
@@ -67,6 +101,7 @@ def build_agent_payload(
     mode: str = DEFAULT_UI_MODE,
     source_ids: list[str] | None = None,
     history: list[dict[str, Any]] | None = None,
+    session_state: dict[str, Any] | None = None,
     location: str | None = None,
     crop: str | None = None,
     language: str | None = None,
@@ -82,6 +117,9 @@ def build_agent_payload(
     trimmed_history = trim_history(history or [])
     if trimmed_history:
         payload["history"] = trimmed_history
+    trimmed_session = trim_session_state(session_state)
+    if trimmed_session:
+        payload["session_state"] = trimmed_session
     if source_ids:
         payload["source_ids"] = source_ids[:10]
     if location:
@@ -208,6 +246,7 @@ def _format_sources(sources: list[Any]) -> str:
         source_id = source.get("source_id")
         snippet = source.get("snippet")
         page = source.get("page")
+        published_date = source.get("published_date")
         safe_url = url if isinstance(url, str) and url.startswith("https://") else None
         label = f"[{title}]({safe_url})" if safe_url else str(title)
         meta = []
@@ -215,6 +254,8 @@ def _format_sources(sources: list[Any]) -> str:
             meta.append(f"`{source_id}`")
         if page is not None:
             meta.append(f"page `{page}`")
+        if published_date:
+            meta.append(f"date `{published_date}`")
         suffix = f" ({', '.join(meta)})" if meta else ""
         lines.append(f"**{idx}. {label}**{suffix}")
         if snippet:

@@ -70,7 +70,19 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         else:
             took_ms = round((time.perf_counter() - started) * 1000, 2)
             response.headers[_REQUEST_ID_HEADER] = request_id
-            log.info("request.completed", status=response.status_code, took_ms=took_ms)
+            if request.url.path == "/api/notifications/unread-count":
+                log.info(
+                    "request.unknown_client",
+                    status=response.status_code,
+                    took_ms=took_ms,
+                    client_host=request.client.host if request.client else None,
+                    user_agent=request.headers.get("user-agent"),
+                    referer=request.headers.get("referer"),
+                    origin=request.headers.get("origin"),
+                    host=request.headers.get("host"),
+                )
+            else:
+                log.info("request.completed", status=response.status_code, took_ms=took_ms)
             return response
         finally:
             structlog.contextvars.clear_contextvars()

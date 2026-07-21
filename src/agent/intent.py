@@ -9,11 +9,13 @@ from typing import Literal
 FarmerIntent = Literal[
     "price_query",
     "yield_query",
+    "metadata_query",
     "news_query",
     "paper_query",
     "advisory_query",
     "unclear_query",
     "developer_task",
+    "mixed",
 ]
 
 FARMER_CORPUS_SOURCE_IDS = ("philrice_news", "irri", "philrice", "pinoyrice")
@@ -100,8 +102,48 @@ def _infer_language(message: str, language: str | None) -> str:
         "pataba",
         "bakit",
         "paano",
+        "kailan",
+        "petsa",
+        "yung",
+        "natin",
+        "upload",
+        "ni-upload",
+        "na-upload",
+        "may ",
+        " ba",
+        "ba?",
+        "tayo",
+        "meron",
+        "regarding sa",
+        "about sa",
     )
     return "taglish" if _has_any(text, tagalog_markers) else "en"
+
+
+def is_taglish(language: str | None, message: str) -> bool:
+    """True when reply should use Taglish based on explicit language or message markers."""
+    lang = (language or "").lower()
+    if lang in {"tl", "fil", "filipino", "tagalog", "taglish"} or lang.startswith("fil"):
+        return True
+    return _infer_language(message, None) == "taglish"
+
+
+def infer_reply_language(
+    message: str,
+    explicit_language: str | None = None,
+    session_language: str | None = None,
+) -> str:
+    """Prefer current message language over stale explicit/session language."""
+    from_message = _infer_language(message, None)
+    if from_message == "taglish":
+        return "taglish"
+    explicit = _clean(explicit_language)
+    if explicit:
+        return explicit.lower()
+    session = _clean(session_language)
+    if session:
+        return session.lower()
+    return from_message
 
 
 def _infer_crop(message: str, crop: str | None) -> str | None:
@@ -123,6 +165,27 @@ def _classify_intent(message: str, user_type: str) -> FarmerIntent:
         ("api", "scraper", "qdrant", "implement", "debug", "testing", "unit test", "phase", "tasklist"),
     ):
         return "developer_task"
+    if _has_any(
+        text,
+        ("crop", "crops", "commodit", "commodities", "produkto"),
+    ) and _has_any(
+        text,
+        (
+            "available",
+            "meron",
+            "list",
+            "listahan",
+            "anong",
+            "ano ang",
+            "what",
+            "openstat",
+            "datos",
+            "data",
+            "uri",
+            "klase",
+        ),
+    ):
+        return "metadata_query"
     if _has_any(text, ("magkano", "presyo", "price", "farmgate", "market price")):
         return "price_query"
     if _has_any(text, ("ani", "yield", "production", "mababa ani", "harvest")):
@@ -188,11 +251,30 @@ def infer_farmer_intent(
     crop: str | None,
     language: str | None,
     source_ids: list[str] | None,
+    session: object | None = None,
 ) -> FarmerIntentResult:
+    from src.agent.follow_up import looks_like_corpus_continuation, looks_like_fresh_corpus_query
+    from src.api.schemas import AgentSessionState
+
     resolved_user_type = (_clean(user_type) or "farmer").lower()
     resolved_location = _clean(location)
     resolved_crop = _infer_crop(message, crop)
+    if isinstance(session, AgentSessionState):
+        resolved_location = resolved_location or session.location
+        resolved_crop = resolved_crop or session.crop
     intent = _classify_intent(message, resolved_user_type)
+
+    if (
+        intent == "unclear_query"
+        and isinstance(session, AgentSessionState)
+        and session.last_intent in {"news_query", "paper_query", "advisory_query"}
+        and not looks_like_fresh_corpus_query(message)
+        and len(message.split()) <= 15
+    ):
+        inherited = session.last_intent
+        if inherited in {"price_query", "yield_query", "news_query", "paper_query", "advisory_query"}:
+            intent = inherited  # type: ignore[assignment]
+
     clarification = _clarification(intent, location=resolved_location, crop=resolved_crop)
     mentioned = None if source_ids else _infer_mentioned_source_ids(message, intent)
     if intent == "news_query":

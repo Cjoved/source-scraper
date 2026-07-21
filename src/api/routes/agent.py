@@ -126,10 +126,14 @@ def agent_chat(
     current_user: CurrentUserDep,
 ) -> AgentChatResponse:
     del request
+    from src.api.deps import get_openstat_csv_path, get_price_metadata_cache
+
     return run_agent_chat(
         body,
         settings,
         store=store,
         api_scope=scope,
         current_user=current_user,
+        price_metadata=get_price_metadata_cache().get(),
+        openstat_csv_path=get_openstat_csv_path(settings),
     )

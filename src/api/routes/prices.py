@@ -345,23 +345,29 @@ def search_prices(
 @router.post(
     "/prices/refresh-metadata",
     response_model=RefreshPriceMetadataResponse,
-    summary="Rebuild the in-memory OpenSTAT price metadata cache",
+    summary="Rebuild the in-memory OpenSTAT price metadata cache from local CSV",
 )
 @limiter.limit(rate_limit_search)
 def refresh_price_metadata_route(
     request: Request,
     _scope: object = Depends(require_admin),
-    store: QdrantStoreProtocol = Depends(get_qdrant_store),
+    csv_path: Path = Depends(get_openstat_csv_path),
     cache: PriceMetadataCache = Depends(get_price_metadata_cache),
 ) -> RefreshPriceMetadataResponse:
     del request
     import time
 
-    from src.api.price_metadata_cache import build_price_snapshot_from_rows
+    from src.api.price_metadata_cache import build_price_snapshot_from_csv
+
+    if not csv_path.is_file():
+        raise ApiError(
+            ErrorCode.NOT_FOUND,
+            f"OpenSTAT CSV not found at {csv_path}. Run the openstat scrape/process job first.",
+            status_code=404,
+        )
 
     started = time.perf_counter()
-    rows = list(store.iter_price_rows(PriceFilter()))
-    snapshot = build_price_snapshot_from_rows(rows)
+    snapshot = build_price_snapshot_from_csv(csv_path)
     cache.set(snapshot)
     took_ms = round((time.perf_counter() - started) * 1000, 2)
     return RefreshPriceMetadataResponse(

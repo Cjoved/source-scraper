@@ -1,12 +1,22 @@
 # Deploy/staging app stack for Source Scraper.
 #
-# Qdrant is intentionally not defined here. Deploy Qdrant separately and set:
-#   DOCKER_QDRANT_URL=http://<qdrant-host>:6333
+# Qdrant runs separately (docker-compose.qdrant.yml). Join its Docker network so
+# app containers can reach it by container name (127.0.0.1 publish is host-only).
+#
+#   DOCKER_QDRANT_URL=http://qdrant-vector-db:6333
+#   QDRANT_DOCKER_NETWORK=qdrant_default
+#   (Hostinger often uses qdrant_default; newer compose name: source-scraper-qdrant_default)
 #
 # Common commands:
 #   docker compose -f docker-compose.deploy.yml up -d
 #   docker compose -f docker-compose.deploy.yml --profile scheduler up -d
 #   docker compose -f docker-compose.deploy.yml --profile ui up -d
+
+networks:
+  default:
+  qdrant:
+    external: true
+    name: ${QDRANT_DOCKER_NETWORK:-qdrant_default}
 
 services:
   api:
@@ -27,8 +37,11 @@ services:
     env_file:
       - .env
     environment:
-      QDRANT_URL: ${DOCKER_QDRANT_URL:-http://host.docker.internal:6333}
+      QDRANT_URL: ${DOCKER_QDRANT_URL:-http://qdrant-vector-db:6333}
       FLARESOLVERR_URL: http://flaresolverr:8191
+      HOME: /tmp
+      HF_HOME: /tmp/huggingface
+      FASTEMBED_CACHE_PATH: /tmp/fastembed
       HEADLESS: "true"
       PRISM_HEADLESS: "true"
       PHILRICE_HEADLESS: "true"
@@ -36,6 +49,9 @@ services:
       PINOYRICE_HEADLESS: "true"
       IRRI_HEADLESS: "true"
       OPENSTAT_HEADLESS: "true"
+    networks:
+      - default
+      - qdrant
     ports:
       - "8000:8000"
     volumes:
@@ -65,6 +81,8 @@ services:
       - .env
     environment:
       AGENT_UI_API_URL: ${AGENT_UI_API_URL:-http://api:8000/v1/agent/chat}
+    networks:
+      - default
     ports:
       - "8001:8001"
     depends_on:
@@ -83,8 +101,11 @@ services:
     env_file:
       - .env
     environment:
-      QDRANT_URL: ${DOCKER_QDRANT_URL:-http://host.docker.internal:6333}
+      QDRANT_URL: ${DOCKER_QDRANT_URL:-http://qdrant-vector-db:6333}
       FLARESOLVERR_URL: http://flaresolverr:8191
+      HOME: /tmp
+      HF_HOME: /tmp/huggingface
+      FASTEMBED_CACHE_PATH: /tmp/fastembed
       HEADLESS: "true"
       PRISM_HEADLESS: "true"
       PHILRICE_HEADLESS: "true"
@@ -92,6 +113,9 @@ services:
       PINOYRICE_HEADLESS: "true"
       IRRI_HEADLESS: "true"
       OPENSTAT_HEADLESS: "true"
+    networks:
+      - default
+      - qdrant
     volumes:
       - ./data:/app/data
     restart: unless-stopped
@@ -101,5 +125,7 @@ services:
   flaresolverr:
     image: flaresolverr/flaresolverr:v3.3.21
     container_name: flaresolverr
+    networks:
+      - default
     # Internal network only — do not publish port 8191 in production.
     restart: unless-stopped

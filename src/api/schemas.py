@@ -223,11 +223,26 @@ class AgentConfidence(StrEnum):
     LOW = "low"
 
 
+class AgentSource(BaseModel):
+    source_id: str | None = None
+    title: str | None = None
+    url: str | None = None
+    filename: str | None = None
+    page: int | None = None
+    snippet: str | None = None
+    published_date: str | None = None
+
+
 class AgentChatMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     role: Literal["user", "assistant"] = Field(description="Conversation message role.")
     content: Annotated[str, Field(min_length=1, max_length=4000)]
+    sources: list[AgentSource] | None = Field(
+        default=None,
+        max_length=10,
+        description="Optional structured sources from a prior assistant turn.",
+    )
 
 
 class AgentTask(BaseModel):
@@ -242,18 +257,21 @@ class AgentToolCall(BaseModel):
     result_count: int = 0
 
 
-class AgentSource(BaseModel):
-    source_id: str | None = None
-    title: str | None = None
-    url: str | None = None
-    filename: str | None = None
-    page: int | None = None
-    snippet: str | None = None
-
-
 class AgentWarning(BaseModel):
     code: Annotated[str, Field(min_length=1, max_length=100)]
     message: Annotated[str, Field(min_length=1, max_length=1000)]
+
+
+class AgentSessionState(BaseModel):
+    """Client-carried session facts from prior tool calls (not LLM guesses)."""
+
+    location: str | None = None
+    crop: str | None = None
+    language: str | None = None
+    last_intent: str | None = None
+    last_tool_name: str | None = None
+    last_tool_args: dict[str, object] | None = None
+    last_source_ids: list[str] | None = None
 
 
 class AgentChatRequest(BaseModel):
@@ -304,6 +322,10 @@ class AgentChatRequest(BaseModel):
         description="Optional source ids the agent may use in later tool-backed phases.",
     )
     max_tool_calls: Annotated[int | None, Field(ge=0, le=8)] = None
+    session_state: AgentSessionState | None = Field(
+        default=None,
+        description="Optional structured session context from the client.",
+    )
 
 
 class AgentChatResponse(BaseModel):
@@ -313,6 +335,7 @@ class AgentChatResponse(BaseModel):
     sources: list[AgentSource] = Field(default_factory=list)
     warnings: list[AgentWarning] = Field(default_factory=list)
     confidence: AgentConfidence = AgentConfidence.LOW
+    session_state: AgentSessionState = Field(default_factory=AgentSessionState)
     took_ms: float
 
 

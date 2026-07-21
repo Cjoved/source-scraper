@@ -5,17 +5,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 from datetime import date
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote_plus
 
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
 
+from src.api.price_metadata_cache import (
+    PriceMetadataSnapshot,
+    build_price_snapshot_from_csv,
+)
 from src.api.schemas import AgentSource, PriceSummaryScope, SemesterCode, SummaryScope
 from src.services.aggregation import aggregate_rows
 from src.services.filters import build_yield_filter
 from src.services.price_aggregation import aggregate_price_rows
 from src.services.price_filters import build_price_filter
+from src.services.rerank import rerank_hit_payloads
 from src.storage.qdrant_store import CorpusFilter, KnowledgeHitRecord, QdrantStoreProtocol
 
 MAX_TOOL_LIMIT = 10
@@ -28,6 +34,10 @@ class ToolExecutionContext:
     store: QdrantStoreProtocol
     min_score: float = 0.0
     summarize_max_rows: int = 10_000
+    rerank_enabled: bool = True
+    rerank_candidates: int = 4
+    price_metadata: PriceMetadataSnapshot | None = None
+    openstat_csv_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +97,14 @@ class SummarizePricesArgs(BaseModel):
     month: str | None = None
 
 
+class ListOpenstatCommoditiesArgs(BaseModel):
+    commodity_type: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Optional OpenSTAT commodity type filter (e.g. Cereals, Livestock).",
+    )
+
+
 def _snippet(value: object) -> str:
     text = str(value or "").strip()
     return text[:SNIPPET_CHARS]
@@ -128,6 +146,7 @@ def _fallback_source_url(payload: dict[str, Any]) -> str | None:
 
 def _source_from_payload(payload: dict[str, Any], *, source_id: str) -> AgentSource:
     url = _string_or_none(payload.get("url") or payload.get("pdf_url") or payload.get("source_url"))
+    payload_date = _payload_date(payload)
     return AgentSource(
         source_id=_string_or_none(payload.get("source_id")) or source_id,
         title=_string_or_none(payload.get("title")),
@@ -135,6 +154,7 @@ def _source_from_payload(payload: dict[str, Any], *, source_id: str) -> AgentSou
         filename=_string_or_none(payload.get("filename")),
         page=_int_or_none(payload.get("page")),
         snippet=_snippet(payload.get("text") or payload),
+        published_date=payload_date.isoformat() if payload_date else None,
     )
 
 
@@ -290,6 +310,28 @@ def _latest_corpus_hits(
     return _dedupe_corpus_documents(_sort_corpus_hits(candidates, "latest"))[:limit]
 
 
+def _candidate_limit(limit: int, multiplier: int) -> int:
+    return min(MAX_TOOL_LIMIT * max(multiplier, 1), max(limit, limit * max(multiplier, 1)))
+
+
+def _maybe_rerank_hits(
+    ctx: ToolExecutionContext,
+    *,
+    query: str,
+    hits: list[KnowledgeHitRecord],
+    limit: int,
+) -> list[KnowledgeHitRecord]:
+    if not hits or not ctx.rerank_enabled:
+        return hits[:limit]
+    reranked, _meta = rerank_hit_payloads(
+        query,
+        hits,
+        top_k=limit,
+        enabled=True,
+    )
+    return reranked
+
+
 def _search_corpus_impl(
     ctx: ToolExecutionContext,
     *,
@@ -302,12 +344,14 @@ def _search_corpus_impl(
     if sort_by == "latest":
         hits = _latest_corpus_hits(ctx, query=query, flt=flt, limit=limit)
     else:
+        fetch_limit = _candidate_limit(limit, ctx.rerank_candidates)
         hits = ctx.store.search_corpus(
             query_text=query,
             flt=flt,
-            limit=limit,
+            limit=fetch_limit,
             min_score=ctx.min_score,
         )
+        hits = _maybe_rerank_hits(ctx, query=query, hits=hits, limit=limit)
     payloads = [{"score": hit.score, **hit.payload} for hit in hits]
     sources = [_source_from_payload(hit.payload, source_id="agri_corpus_rag") for hit in hits]
     return ToolExecutionResult(
@@ -340,7 +384,14 @@ def _search_yield_knowledge_impl(
         year_max=year_max,
         semester=_semester(semester),
     )
-    hits = ctx.store.hybrid_search(query_text=query, flt=flt, limit=limit, min_score=ctx.min_score)
+    fetch_limit = _candidate_limit(limit, ctx.rerank_candidates)
+    hits = ctx.store.hybrid_search(
+        query_text=query,
+        flt=flt,
+        limit=fetch_limit,
+        min_score=ctx.min_score,
+    )
+    hits = _maybe_rerank_hits(ctx, query=query, hits=hits, limit=limit)
     payloads = [{"score": hit.score, **hit.payload} for hit in hits]
     sources = [_source_from_payload(hit.payload, source_id="prism_yield_knowledge") for hit in hits]
     return ToolExecutionResult(
@@ -433,7 +484,14 @@ def _search_prices_impl(
         year_max=year_max,
         month=month,
     )
-    hits = ctx.store.search_prices(query_text=query, flt=flt, limit=limit, min_score=ctx.min_score)
+    fetch_limit = _candidate_limit(limit, ctx.rerank_candidates)
+    hits = ctx.store.search_prices(
+        query_text=query,
+        flt=flt,
+        limit=fetch_limit,
+        min_score=ctx.min_score,
+    )
+    hits = _maybe_rerank_hits(ctx, query=query, hits=hits, limit=limit)
     payloads = [{"score": hit.score, **hit.payload} for hit in hits]
     sources = [_source_from_payload(hit.payload, source_id="openstat_price_knowledge") for hit in hits]
     return ToolExecutionResult(
@@ -505,6 +563,80 @@ def _summarize_prices_impl(
     )
 
 
+def _resolve_price_metadata_snapshot(ctx: ToolExecutionContext) -> PriceMetadataSnapshot:
+    """Prefer in-memory cache, then local CSV stream — never full-scroll Qdrant."""
+    if ctx.price_metadata is not None and ctx.price_metadata.commodities_count > 0:
+        return ctx.price_metadata
+    if ctx.openstat_csv_path is not None and ctx.openstat_csv_path.is_file():
+        return build_price_snapshot_from_csv(ctx.openstat_csv_path)
+    return PriceMetadataSnapshot()
+
+
+def _list_openstat_commodities_impl(
+    ctx: ToolExecutionContext,
+    *,
+    commodity_type: str | None = None,
+) -> ToolExecutionResult:
+    snapshot = _resolve_price_metadata_snapshot(ctx)
+    filtered_type = (commodity_type or "").strip() or None
+    commodity_types = list(snapshot.commodity_types)
+    commodities_by_type = {
+        ctype: list(items) for ctype, items in snapshot.commodities_by_type.items()
+    }
+    if filtered_type:
+        match = next(
+            (ctype for ctype in commodity_types if ctype.lower() == filtered_type.lower()),
+            None,
+        )
+        if match is None:
+            commodity_types = []
+            commodities_by_type = {}
+        else:
+            commodity_types = [match]
+            commodities_by_type = {match: list(snapshot.commodities_by_type.get(match, ()))}
+    total_commodities = sum(len(items) for items in commodities_by_type.values())
+    payload = {
+        "commodity_types": commodity_types,
+        "commodities_by_type": commodities_by_type,
+        "commodities_count": total_commodities,
+        "geolocations_count": snapshot.geolocations_count,
+        "years": list(snapshot.years),
+    }
+    preview_lines: list[str] = []
+    for ctype in commodity_types:
+        items = commodities_by_type.get(ctype, [])
+        sample = ", ".join(items[:6])
+        suffix = f" (+{len(items) - 6} more)" if len(items) > 6 else ""
+        preview_lines.append(f"{ctype}: {sample}{suffix}" if sample else f"{ctype}: (none)")
+    if total_commodities:
+        summary = (
+            f"Listed {total_commodities} OpenSTAT commodity label(s) "
+            f"across {len(commodity_types)} type(s)."
+        )
+    else:
+        summary = (
+            "OpenSTAT commodity catalog is empty. Ensure openstat_table.csv exists "
+            "or refresh price metadata from CSV."
+        )
+    sources = [
+        AgentSource(
+            source_id="openstat_price_records",
+            snippet=(
+                "OpenSTAT commodity catalog from local CSV / metadata cache. "
+                + "; ".join(preview_lines[:8])
+            ),
+        )
+    ] if total_commodities else []
+    return ToolExecutionResult(
+        name="list_openstat_commodities",
+        arguments={"commodity_type": filtered_type},
+        summary=summary,
+        result_count=total_commodities,
+        payload=payload,
+        sources=sources,
+    )
+
+
 def build_agent_tools(ctx: ToolExecutionContext) -> list[BaseTool]:
     return [
         StructuredTool.from_function(
@@ -539,5 +671,15 @@ def build_agent_tools(ctx: ToolExecutionContext) -> list[BaseTool]:
             description="Compute exact deterministic OpenSTAT farmgate price summary for filters.",
             args_schema=SummarizePricesArgs,
             func=lambda **kwargs: _summarize_prices_impl(ctx, **kwargs),
+        ),
+        StructuredTool.from_function(
+            name="list_openstat_commodities",
+            description=(
+                "List distinct OpenSTAT farmgate commodity types and commodity labels "
+                "available in indexed price data. Use for questions about which crops or "
+                "commodities are covered."
+            ),
+            args_schema=ListOpenstatCommoditiesArgs,
+            func=lambda **kwargs: _list_openstat_commodities_impl(ctx, **kwargs),
         ),
     ]

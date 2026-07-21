@@ -11,6 +11,7 @@ dependencies = [
     "rich>=13.0",
     "pydantic>=2.13.4",
     "pandas>=3.0.3",
+    "flashrank>=0.2.10",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +27,7 @@ api = [
     "slowapi>=0.1.9",
     "structlog>=24.1",
     "pyjwt>=2.12.1",
+    "flashrank>=0.2.0",
 ]
 dev = [
     "ruff>=0.6",
@@ -57,6 +59,7 @@ agent = [
     "langchain-deepseek>=1.1.0",
     "langchain-moonshot>=0.1.0",
     "langchain-openai>=1.3.3",
+    "flashrank>=0.2.0",
 ]
 ui = [
     "chainlit>=2.8",

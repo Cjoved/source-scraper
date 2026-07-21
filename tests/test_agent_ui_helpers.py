@@ -47,6 +47,29 @@ class AgentUiHelperTests(unittest.TestCase):
 
         self.assertEqual([item["content"] for item in trimmed], ["message 9", "message 10", "message 11"])
 
+    def test_trim_history_preserves_assistant_sources(self) -> None:
+        history = [
+            {"role": "user", "content": "latest news?"},
+            {
+                "role": "assistant",
+                "content": "Narito ang listahan.",
+                "sources": [
+                    {
+                        "source_id": "irri",
+                        "title": "IRRI item",
+                        "url": "https://example.test/irri",
+                        "published_date": "2026-06-20",
+                    }
+                ],
+            },
+        ]
+
+        trimmed = trim_history(history)
+
+        self.assertEqual(len(trimmed), 2)
+        self.assertEqual(trimmed[1]["sources"][0]["title"], "IRRI item")
+        self.assertEqual(trimmed[1]["sources"][0]["published_date"], "2026-06-20")
+
     def test_apply_ui_command_updates_sources_without_api_call(self) -> None:
         result = apply_ui_command(
             "/sources irri,philrice_news",
@@ -129,6 +152,20 @@ class AgentUiHelperTests(unittest.TestCase):
         self.assertIn("### Tool Trace", markdown)
         self.assertIn("### Warnings", markdown)
         self.assertIn("`high`", markdown)
+
+
+    def test_build_agent_payload_includes_session_state(self) -> None:
+        payload = build_agent_payload(
+            message="Magkano ulit?",
+            session_state={
+                "location": "Nueva Ecija",
+                "last_tool_name": "summarize_prices",
+                "last_tool_args": {"geolocation": "Nueva Ecija"},
+            },
+        )
+
+        self.assertEqual(payload["session_state"]["location"], "Nueva Ecija")
+        self.assertEqual(payload["session_state"]["last_tool_name"], "summarize_prices")
 
 
 if __name__ == "__main__":

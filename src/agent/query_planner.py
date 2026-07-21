@@ -8,7 +8,7 @@ from datetime import date
 from typing import Literal
 
 from src.agent.intent import FARMER_CORPUS_SOURCE_IDS, FarmerIntentResult
-from src.api.schemas import AgentWarning
+from src.api.schemas import AgentSessionState, AgentWarning
 
 ToolPreference = Literal[
     "summarize_prices",
@@ -16,6 +16,7 @@ ToolPreference = Literal[
     "summarize_yield",
     "search_yield_knowledge",
     "search_corpus",
+    "list_openstat_commodities",
     "none",
 ]
 
@@ -160,7 +161,7 @@ def resolve_date_range(message: str, *, today: date | None = None) -> DateRange:
     return DateRange()
 
 
-def _infer_location(message: str, explicit_location: str | None) -> str | None:
+def infer_location(message: str, explicit_location: str | None) -> str | None:
     if explicit_location and explicit_location.strip():
         return explicit_location.strip()
     lowered = message.lower()
@@ -168,6 +169,38 @@ def _infer_location(message: str, explicit_location: str | None) -> str | None:
         if re.search(rf"\b{re.escape(marker.lower())}\b", lowered):
             return marker
     return None
+
+
+def infer_location_from_user_history(history: list) -> str | None:
+    for item in reversed(history):
+        if getattr(item, "role", None) != "user":
+            continue
+        content = getattr(item, "content", "")
+        if not isinstance(content, str):
+            continue
+        found = infer_location(content, None)
+        if found:
+            return found
+    return None
+
+
+def infer_crop_from_user_history(history: list) -> str | None:
+    from src.agent.intent import _infer_crop
+
+    for item in reversed(history):
+        if getattr(item, "role", None) != "user":
+            continue
+        content = getattr(item, "content", "")
+        if not isinstance(content, str):
+            continue
+        found = _infer_crop(content, None)
+        if found:
+            return found
+    return None
+
+
+def _infer_location(message: str, explicit_location: str | None) -> str | None:
+    return infer_location(message, explicit_location)
 
 
 def _commodity_from_crop(crop: str | None) -> str | None:
@@ -190,6 +223,8 @@ def _tool_preference(intent: str, message: str) -> ToolPreference:
     text = message.lower()
     exploratory = _has_any(text, ("hanap", "maghanap", "search", "records", "record"))
     numeric = _has_any(text, ("average", "avg", "mean", "highest", "lowest", "trend", "total", "magkano"))
+    if intent == "metadata_query":
+        return "list_openstat_commodities"
     if intent == "price_query":
         return "search_prices" if exploratory and not numeric else "summarize_prices"
     if intent == "yield_query":
@@ -204,6 +239,7 @@ def build_query_plan(
     message: str,
     farmer_context: FarmerIntentResult,
     source_ids: list[str] | None,
+    session: AgentSessionState | None = None,
     today: date | None = None,
 ) -> AgentQueryPlan:
     intent = farmer_context.intent
@@ -222,13 +258,21 @@ def build_query_plan(
             )
         )
 
+    location = infer_location(message, farmer_context.location)
+    if not location and session and session.location:
+        location = session.location
+
+    crop = farmer_context.crop
+    if not crop and session and session.crop:
+        crop = session.crop
+
     return AgentQueryPlan(
         intent=intent,
         tool_preference=_tool_preference(intent, message),
         date_range=resolve_date_range(message, today=today),
-        location=_infer_location(message, farmer_context.location),
-        crop=farmer_context.crop,
-        commodity=_commodity_from_crop(farmer_context.crop),
+        location=location,
+        crop=crop,
+        commodity=_commodity_from_crop(crop),
         source_ids=plan_source_ids,
         ignored_context=ignored_context,
         warnings=warnings,

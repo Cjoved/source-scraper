@@ -2,6 +2,9 @@
 
 Run with:
     uv run chainlit run src/agent/ui_chainlit.py -w --port 8001
+
+Local FastAPI must NOT share port 8000 with DigiSaka/XAMPP PHP.
+Default API target is http://127.0.0.1:8002/v1/agent/chat
 """
 
 from __future__ import annotations
@@ -13,14 +16,16 @@ from typing import Any
 
 import chainlit as cl  # pyright: ignore[reportMissingImports] - optional `ui` extra.
 import httpx
+from chainlit.config import config
+from chainlit.utils import wrap_user_function
 from dotenv import load_dotenv
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-# Chainlit does not load project .env by itself; pick up AGENT_UI_* for local runs.
-load_dotenv(_REPO_ROOT / ".env")
+# Chainlit does not load project .env by itself; override shell leftovers.
+load_dotenv(_REPO_ROOT / ".env", override=True)
 
 from src.agent.ui_helpers import (
     DEFAULT_UI_MODE,
@@ -29,7 +34,8 @@ from src.agent.ui_helpers import (
     format_agent_response,
 )
 
-DEFAULT_AGENT_API_URL = "http://127.0.0.1:8000/v1/agent/chat"
+# DigiSaka (PHP) often owns :8000 on this machine — default API to :8002.
+DEFAULT_AGENT_API_URL = "http://localhost:8000/v1/agent/chat"
 DEFAULT_TIMEOUT_SECONDS = 90.0
 STREAM_CHUNK_SIZE = 36
 PROFILE_FARMER = "Farmer Chat"
@@ -64,12 +70,21 @@ def _headers() -> dict[str, str]:
     return headers
 
 
-def _history() -> list[dict[str, str]]:
+def _session_state() -> dict[str, Any] | None:
+    state = cl.user_session.get("session_state")
+    return state if isinstance(state, dict) else None
+
+
+def _set_session_state(state: dict[str, Any] | None) -> None:
+    cl.user_session.set("session_state", state)
+
+
+def _history() -> list[dict[str, Any]]:
     history = cl.user_session.get("history")
     return history if isinstance(history, list) else []
 
 
-def _set_history(history: list[dict[str, str]]) -> None:
+def _set_history(history: list[dict[str, Any]]) -> None:
     cl.user_session.set("history", history)
 
 
@@ -120,6 +135,7 @@ async def _send_welcome() -> None:
             "### Kumusta, Ka-Digisaka!\n\n"
             "Ako ang **AgriDataAgent**, katulong mo sa mabilis na paghanap ng impormasyon "
             "tungkol sa palay, presyo, ani, at mga balitang pang-agrikultura.\n\n"
+            f"**API:** `{_api_url()}`\n\n"
             "Pwede kang magtanong nang simple, halimbawa:\n\n"
             "- **Presyo:** Magkano ang palay sa Nueva Ecija?\n"
             "- **Ani:** Kumusta ang average yield sa Laguna noong 2024?\n"
@@ -149,11 +165,12 @@ async def _handle_text(text: str) -> None:
         mode=command.mode,
         source_ids=command.source_ids,
         history=_history(),
+        session_state=_session_state(),
     )
     try:
         async with cl.Step(name="Calling /v1/agent/chat", type="tool", show_input=True) as step:
             step.input = payload
-            await step.stream_token("Sending request to AgriDataAgent API...\n")
+            await step.stream_token(f"POST `{_api_url()}` …\n")
             data = await _call_agent_api(payload)
             step.output = {
                 "confidence": data.get("confidence"),
@@ -162,10 +179,18 @@ async def _handle_text(text: str) -> None:
                 "warnings": len(data.get("warnings") or []),
             }
     except httpx.HTTPStatusError as exc:
+        body_preview = (exc.response.text or "")[:200].replace("\n", " ")
+        hint = ""
+        if exc.response.status_code == 405:
+            hint = (
+                " Port 8000 is usually DigiSaka PHP — run FastAPI on another port "
+                "(e.g. `uv run uvicorn main:app --reload --port 8002`) and set "
+                "`AGENT_UI_API_URL` accordingly."
+            )
         await cl.Message(
             content=(
-                f"Agent API returned HTTP {exc.response.status_code}. "
-                "Check API auth, validation, or server logs."
+                f"Agent API returned HTTP {exc.response.status_code} from `{_api_url()}`. "
+                f"{hint}\n\nPreview: `{body_preview}`"
             )
         ).send()
         return
@@ -173,38 +198,34 @@ async def _handle_text(text: str) -> None:
         await cl.Message(
             content=(
                 f"Could not reach the Agent API at `{_api_url()}` "
-                f"(`{exc.__class__.__name__}`)."
+                f"(`{exc.__class__.__name__}: {exc}`)."
             )
         ).send()
         return
 
     markdown = format_agent_response(data)
     await _stream_markdown(markdown)
+    assistant_entry: dict[str, Any] = {
+        "role": "assistant",
+        "content": str(data.get("answer") or ""),
+    }
+    response_sources = data.get("sources")
+    if isinstance(response_sources, list) and response_sources:
+        assistant_entry["sources"] = response_sources[:10]
     _set_history(
         [
             *_history(),
             {"role": "user", "content": command.message},
-            {"role": "assistant", "content": str(data.get("answer") or "")},
+            assistant_entry,
         ][-10:]
     )
+    response_session = data.get("session_state")
+    if isinstance(response_session, dict):
+        _set_session_state(response_session)
 
 
-@cl.on_chat_start
-async def on_chat_start() -> None:
-    _set_history([])
-    profile = cl.user_session.get("chat_profile")
-    mode, source_ids = _profile_defaults(profile if isinstance(profile, str) else None)
-    _set_mode(mode)
-    _set_source_ids(source_ids)
-
-
-@cl.on_message
-async def on_message(message: cl.Message) -> None:
-    await _handle_text(message.content)
-
-
-@cl.on_chat_start
-async def set_chat_profiles() -> list[cl.ChatProfile]:
+@cl.set_chat_profiles
+async def chat_profiles(user: cl.User | None) -> list[cl.ChatProfile]:
     return [
         cl.ChatProfile(
             name=PROFILE_FARMER,
@@ -286,3 +307,31 @@ async def set_chat_profiles() -> list[cl.ChatProfile]:
             ],
         ),
     ]
+
+
+@cl.on_chat_start
+async def on_chat_start() -> None:
+    _set_history([])
+    _set_session_state(None)
+    profile = cl.user_session.get("chat_profile")
+    mode, source_ids = _profile_defaults(profile if isinstance(profile, str) else None)
+    _set_mode(mode)
+    _set_source_ids(source_ids)
+    await _send_welcome()
+
+
+async def _on_message(message: cl.Message | None = None) -> None:
+    """Handle UI messages; tolerate Chainlit starter edge-cases where message is None."""
+    if message is None:
+        return
+    content = getattr(message, "content", None)
+    if not isinstance(content, str) or not content.strip():
+        return
+    # Avoid Chainlit's built-in @cl.on_message Step wrapper (crashes when message is None).
+    async with cl.Step(name="on_message", type="run", parent_id=getattr(message, "id", None)) as step:
+        step.input = content
+        await _handle_text(content)
+
+
+# Register without Chainlit's buggy parent_id=message.id wrapper (message can be None on starters).
+config.code.on_message = wrap_user_function(_on_message)

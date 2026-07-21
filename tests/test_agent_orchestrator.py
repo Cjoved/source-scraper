@@ -9,9 +9,16 @@ from unittest.mock import patch
 
 from langchain_core.messages import AIMessage, ToolMessage
 
-from src.agent.orchestrator import run_agent_chat
+from src.agent.orchestrator import _format_corpus_metadata_answer, run_agent_chat
 from src.agent.query_planner import resolve_date_range
-from src.api.schemas import AgentChatRequest, AgentConfidence, AgentMode
+from src.api.schemas import (
+    AgentChatMessage,
+    AgentChatRequest,
+    AgentConfidence,
+    AgentMode,
+    AgentSessionState,
+    AgentSource,
+)
 from src.api.settings import Settings
 from tests.fakes.fake_store import FakeQdrantStore
 
@@ -65,6 +72,13 @@ def _settings(
     agent_provider: str = "deepseek",
     agent_api_key: str | None = "test-key",
     agent_model: str = "deepseek-chat",
+    agent_llm_planner: bool = False,
+    agent_plan_max_steps: int = 3,
+    agent_plan_rewrite: bool = False,
+    agent_plan_max_queries: int = 3,
+    agent_max_tool_calls: int = 4,
+    agent_rerank_enabled: bool = False,
+    agent_cascade_min_score: float = 0.15,
 ) -> Settings:
     return Settings(
         app_env="test",
@@ -74,6 +88,13 @@ def _settings(
         agent_provider=agent_provider,
         agent_api_key=agent_api_key,
         agent_model=agent_model,
+        agent_llm_planner=agent_llm_planner,
+        agent_plan_max_steps=agent_plan_max_steps,
+        agent_plan_rewrite=agent_plan_rewrite,
+        agent_plan_max_queries=agent_plan_max_queries,
+        agent_max_tool_calls=agent_max_tool_calls,
+        agent_rerank_enabled=agent_rerank_enabled,
+        agent_cascade_min_score=agent_cascade_min_score,
     )
 
 
@@ -242,7 +263,7 @@ class TestAgentOrchestrator(unittest.TestCase):
         self.assertEqual(response.tool_calls[0].result_count, 2)
         self.assertEqual(response.sources[0].source_id, "prism_yield_records")
         self.assertEqual(response.confidence, AgentConfidence.HIGH)
-        self.assertEqual(len(model.bound_tools), 5)
+        self.assertEqual(len(model.bound_tools), 6)
         second_invocation = model.invocations[1]
         self.assertIsInstance(second_invocation, list)
         messages = cast(list[object], second_invocation)
@@ -423,6 +444,9 @@ class TestAgentOrchestrator(unittest.TestCase):
         self.assertEqual(response.tool_calls[0].result_count, 1)
         self.assertEqual(response.sources[0].source_id, "philrice_news")
         self.assertEqual(response.sources[0].title, "Hybrid seeds update")
+        self.assertIn("Hybrid seeds update", response.answer)
+        self.assertIn("https://example.test/hybrid", response.answer)
+        self.assertNotIn("Found one PhilRice News result", response.answer)
         self.assertEqual(response.confidence, AgentConfidence.MEDIUM)
 
     def test_corpus_sources_are_filtered_by_query_relevance(self) -> None:
@@ -475,6 +499,8 @@ class TestAgentOrchestrator(unittest.TestCase):
         titles = {source.title for source in response.sources}
         self.assertIn("Hybrid seeds update", titles)
         self.assertNotIn("Office activity", titles)
+        self.assertIn("Hybrid seeds update", response.answer)
+        self.assertNotIn("Office activity", response.answer)
         self.assertTrue(any(warning.code == "source_relevance_low" for warning in response.warnings))
 
     def test_latest_corpus_request_injects_scope_and_latest_sort(self) -> None:
@@ -528,7 +554,9 @@ class TestAgentOrchestrator(unittest.TestCase):
                         }
                     ],
                 ),
-                FakeMessage('{"answer": "Latest IRRI news: Latest IRRI news.", "tasklist": []}'),
+                FakeMessage(
+                    '{"answer": "May EMF3 gene breakthrough at Kerala AWD hub mula sa IRRI.", "tasklist": []}'
+                ),
             ]
         )
 
@@ -546,6 +574,10 @@ class TestAgentOrchestrator(unittest.TestCase):
         self.assertEqual(response.tool_calls[0].arguments["source_ids"], ["irri"])
         self.assertEqual(response.tool_calls[0].arguments["sort_by"], "latest")
         self.assertEqual(response.confidence, AgentConfidence.MEDIUM)
+        self.assertIn("Latest IRRI news", response.answer)
+        self.assertIn("https://example.test/newer", response.answer)
+        self.assertNotIn("EMF3", response.answer)
+        self.assertNotIn("Kerala AWD", response.answer)
         second_invocation = cast(list[object], model.invocations[1])
         tool_message = next(message for message in second_invocation if isinstance(message, ToolMessage))
         tool_payload = json.loads(str(tool_message.content))
@@ -754,7 +786,176 @@ class TestAgentOrchestrator(unittest.TestCase):
             ["philrice_news", "irri"],
         )
         self.assertEqual(response.tool_calls[0].arguments["sort_by"], "latest")
+        self.assertIn("Palay update", response.answer)
+        self.assertIn("https://example.test/news", response.answer)
+        self.assertNotIn("May nakita akong palay update.", response.answer)
         self.assertEqual(response.confidence, AgentConfidence.MEDIUM)
+
+    def test_metadata_follow_up_reuses_prior_sources_with_dates(self) -> None:
+        prior_sources = [
+            AgentSource(
+                source_id="irri",
+                title="IRRI news item one",
+                url="https://example.test/irri-1",
+                published_date="2026-06-20",
+            ),
+            AgentSource(
+                source_id="irri",
+                title="IRRI news item two",
+                url="https://example.test/irri-2",
+                published_date="2026-06-18",
+            ),
+        ]
+        model = FakeModel(
+            '{"answer": "Na-post noong 2026-06-20 ang IRRI news item one at '
+            '2026-06-18 ang IRRI news item two.", "tasklist": []}'
+        )
+
+        with patch("src.agent.orchestrator.create_chat_model", return_value=model):
+            response = run_agent_chat(
+                AgentChatRequest(
+                    message="ano ano ang mga date nitong limang news na ito?",
+                    mode=AgentMode.CHAT,
+                    history=[
+                        AgentChatMessage(role="user", content="ano ang latest news na meron tayo?"),
+                        AgentChatMessage(
+                            role="assistant",
+                            content="Narito ang mga nahanap na agri news (exact titles mula sa database):",
+                            sources=prior_sources,
+                        ),
+                    ],
+                ),
+                _settings(),
+            )
+
+        self.assertIn("2026-06-20", response.answer)
+        self.assertIn("2026-06-18", response.answer)
+        self.assertEqual(response.sources, prior_sources)
+        self.assertEqual(response.tool_calls, [])
+        self.assertIn(response.confidence, {AgentConfidence.MEDIUM, AgentConfidence.HIGH})
+
+    def test_metadata_follow_up_singular_uses_agentic_llm_path(self) -> None:
+        prior_sources = [
+            AgentSource(
+                source_id="irri",
+                title="IRRI news item one",
+                url="https://example.test/irri-1",
+                published_date="2026-06-20",
+            ),
+        ]
+        model = FakeModel('{"answer": "Na-post noong 2026-06-20 ang IRRI news item one.", "tasklist": []}')
+
+        with patch("src.agent.orchestrator.create_chat_model", return_value=model):
+            response = run_agent_chat(
+                AgentChatRequest(
+                    message="kailan na-upload yung article?",
+                    mode=AgentMode.CHAT,
+                    session_state=AgentSessionState(last_intent="news_query", last_tool_name="search_corpus"),
+                    history=[
+                        AgentChatMessage(role="user", content="latest news?"),
+                        AgentChatMessage(
+                            role="assistant",
+                            content="Narito ang listahan.",
+                            sources=prior_sources,
+                        ),
+                    ],
+                ),
+                _settings(),
+            )
+
+        self.assertIn("2026-06-20", response.answer)
+        self.assertIn(response.confidence, {AgentConfidence.MEDIUM, AgentConfidence.HIGH})
+
+    def test_combined_explain_and_date_follow_up_targets_article_number(self) -> None:
+        prior_sources = [
+            AgentSource(
+                source_id="irri",
+                title="First article",
+                url="https://example.test/1",
+                published_date="2026-06-15",
+                snippet="First snippet.",
+            ),
+            AgentSource(
+                source_id="irri",
+                title="India seeks faster delivery",
+                url="https://example.test/2",
+                published_date="2026-06-14",
+                snippet="India must accelerate climate-resilient rice varieties.",
+            ),
+            AgentSource(
+                source_id="irri",
+                title="Third article",
+                url="https://example.test/3",
+                published_date="2026-06-13",
+                snippet="Third snippet.",
+            ),
+        ]
+        model = FakeModel(
+            '{"answer": "Ang article #2 ay tungkol sa pagpapabilis ng climate-resilient rice sa India. '
+            'Na-post noong 2026-06-14.", "tasklist": []}'
+        )
+
+        with patch("src.agent.orchestrator.create_chat_model", return_value=model):
+            response = run_agent_chat(
+                AgentChatRequest(
+                    message=(
+                        "ano yung laman nung article no. 2 pa explain tapos "
+                        "ano naman yung date kung kailan na upload ito?"
+                    ),
+                    mode=AgentMode.CHAT,
+                    session_state=AgentSessionState(last_intent="news_query", last_tool_name="search_corpus"),
+                    history=[
+                            AgentChatMessage(role="user", content="latest news?"),
+                            AgentChatMessage(
+                                role="assistant",
+                                content="Narito ang listahan.",
+                                sources=prior_sources,
+                            ),
+                        ],
+                    ),
+                    _settings(),
+                )
+
+        self.assertIn("India", response.answer)
+        self.assertIn("2026-06-14", response.answer)
+        self.assertEqual(len(response.sources), 1)
+        self.assertEqual(response.sources[0].title, "India seeks faster delivery")
+
+    def test_explain_only_follow_up_reuses_prior_source(self) -> None:
+        prior_sources = [
+            AgentSource(
+                source_id="irri",
+                title="India seeks faster delivery",
+                url="https://example.test/2",
+                published_date="2026-06-14",
+                snippet="India must accelerate climate-resilient rice varieties.",
+            ),
+        ]
+        model = FakeModel(
+            '{"answer": "Ang balita ay tungkol sa pagpapabilis ng climate-resilient rice sa India.", '
+            '"tasklist": []}'
+        )
+
+        with patch("src.agent.orchestrator.create_chat_model", return_value=model):
+            response = run_agent_chat(
+                AgentChatRequest(
+                    message="pa explain naman",
+                    mode=AgentMode.CHAT,
+                    history=[
+                        AgentChatMessage(role="user", content="latest news?"),
+                        AgentChatMessage(
+                            role="assistant",
+                            content="Na-post noong 2026-06-14 ang India seeks faster delivery.",
+                            sources=prior_sources,
+                        ),
+                    ],
+                ),
+                _settings(),
+            )
+
+        self.assertIn("India", response.answer)
+        self.assertEqual(response.sources, prior_sources)
+        self.assertNotIn("Ano ang gusto mong malaman", response.answer)
 
     def test_latest_papers_query_defaults_to_publication_sources(self) -> None:
         store = FakeQdrantStore()
@@ -942,16 +1143,6 @@ class TestAgentOrchestrator(unittest.TestCase):
                     content="",
                     tool_calls=[
                         {
-                            "id": "call_1",
-                            "name": "summarize_prices",
-                            "args": {"geolocation": "Abra", "commodity": "Palay"},
-                        }
-                    ],
-                ),
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
                             "id": "call_2",
                             "name": "search_prices",
                             "args": {
@@ -993,6 +1184,96 @@ class TestAgentOrchestrator(unittest.TestCase):
         self.assertEqual(response.confidence, AgentConfidence.LOW)
         self.assertTrue(any(warning.code == "tool_scope_blocked" for warning in response.warnings))
         self.assertTrue(any(warning.code == "no_results" for warning in response.warnings))
+
+    def test_metadata_query_uses_list_openstat_commodities(self) -> None:
+        from src.api.price_metadata_cache import build_price_snapshot_from_rows
+
+        store = FakeQdrantStore()
+        rows = [
+            {
+                "geolocation": "Nueva Ecija",
+                "commodity_type": "Cereals",
+                "commodity": "Palay",
+                "year": 2024,
+                "month": "January",
+                "price_php_per_kg": 25.0,
+                "source": "openstat_psa",
+                "text": "Palay price",
+            },
+            {
+                "geolocation": "Nueva Ecija",
+                "commodity_type": "Cereals",
+                "commodity": "Corn [White]",
+                "year": 2024,
+                "month": "January",
+                "price_php_per_kg": 20.0,
+                "source": "openstat_psa",
+                "text": "Corn price",
+            },
+        ]
+        store.seed_prices(rows)
+        model = FakeModel('{"answer": "May Palay at Corn sa OpenSTAT.", "tasklist": []}')
+        with patch("src.agent.orchestrator.create_chat_model", return_value=model):
+            response = run_agent_chat(
+                AgentChatRequest(
+                    message="Ano pa ang crops na available sa data?",
+                    mode=AgentMode.CHAT,
+                ),
+                _settings(),
+                store=store,
+                price_metadata=build_price_snapshot_from_rows(rows),
+            )
+
+        self.assertEqual(response.tool_calls[0].name, "list_openstat_commodities")
+        self.assertGreaterEqual(response.tool_calls[0].result_count, 2)
+        self.assertTrue("Palay" in response.answer or "Corn" in response.answer)
+
+
+    def test_price_follow_up_reuses_session_and_runs_summarize_prices(self) -> None:
+        store = FakeQdrantStore()
+        store.seed_prices(
+            [
+                {
+                    "geolocation": "Nueva Ecija",
+                    "commodity_type": "Palay and Rice",
+                    "commodity": "Palay",
+                    "year": 2024,
+                    "month": "January",
+                    "price_php_per_kg": 25.0,
+                }
+            ]
+        )
+        model = FakeModel('{"answer": "LLM answer after tool.", "tasklist": []}')
+
+        with patch("src.agent.orchestrator.create_chat_model", return_value=model):
+            response = run_agent_chat(
+                AgentChatRequest(
+                    message="Magkano ulit?",
+                    mode=AgentMode.CHAT,
+                    history=[
+                        AgentChatMessage(role="user", content="Magkano palay sa Nueva Ecija?"),
+                        AgentChatMessage(role="assistant", content="Average price is PHP 25/kg."),
+                    ],
+                    session_state=AgentSessionState(
+                        location="Nueva Ecija",
+                        crop="palay",
+                        last_intent="price_query",
+                        last_tool_name="summarize_prices",
+                        last_tool_args={
+                            "geolocation": "Nueva Ecija",
+                            "commodity": "Palay",
+                        },
+                    ),
+                ),
+                _settings(),
+                store=store,
+            )
+
+        self.assertEqual(response.tool_calls[0].name, "summarize_prices")
+        self.assertEqual(response.tool_calls[0].arguments["geolocation"], "Nueva Ecija")
+        self.assertGreater(response.tool_calls[0].result_count, 0)
+        self.assertEqual(response.session_state.location, "Nueva Ecija")
+        self.assertEqual(response.session_state.last_tool_name, "summarize_prices")
 
 
 if __name__ == "__main__":

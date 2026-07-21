@@ -74,6 +74,13 @@ class Settings(BaseSettings):
     agent_max_tool_calls: int = Field(default=4, ge=0, le=8)
     agent_default_mode: str = Field(default="tasklist")
     agent_summarize_max_rows: int = Field(default=10_000, gt=0)
+    agent_llm_planner: bool = Field(default=True)
+    agent_plan_max_steps: int = Field(default=3, ge=1, le=5)
+    agent_plan_rewrite: bool = Field(default=True)
+    agent_plan_max_queries: int = Field(default=3, ge=1, le=5)
+    agent_cascade_min_score: float = Field(default=0.15, ge=0.0, le=1.0)
+    agent_rerank_enabled: bool = Field(default=True)
+    agent_rerank_candidates: int = Field(default=4, ge=1, le=20)
 
     qdrant_url: str = Field(default="http://localhost:6333")
     qdrant_api_key: str | None = Field(default=None)

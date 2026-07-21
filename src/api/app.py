@@ -38,8 +38,18 @@ from src.api.settings import Settings, get_settings
 
 
 def _attempt_startup_metadata() -> None:
-    """Best-effort populate metadata cache; never block startup on Qdrant outage."""
-    from src.api.deps import _metadata_cache_singleton, _qdrant_store_singleton
+    """Best-effort populate metadata caches; never block startup on Qdrant outage.
+
+    OpenSTAT price metadata is built from the local CSV (stream distinct labels only),
+    not a full Qdrant scroll — price collections can be millions of points.
+    """
+    from src.api.deps import (
+        _metadata_cache_singleton,
+        _price_metadata_cache_singleton,
+        _qdrant_store_singleton,
+        get_openstat_csv_path,
+    )
+    from src.api.price_metadata_cache import build_price_snapshot_from_csv
     from src.storage.qdrant_store import YieldFilter
 
     log = get_logger("api.startup")
@@ -59,6 +69,31 @@ def _attempt_startup_metadata() -> None:
             "metadata.load_failed",
             reason=exc.__class__.__name__,
             hint="Call POST /v1/index/refresh-metadata after Qdrant is reachable.",
+        )
+    try:
+        csv_path = get_openstat_csv_path(get_settings())
+        if not csv_path.is_file():
+            log.warning(
+                "price_metadata.skipped",
+                reason="csv_missing",
+                path=str(csv_path),
+                hint="Place openstat_table.csv or call POST /v1/prices/refresh-metadata after scrape/index.",
+            )
+            return
+        price_snapshot = build_price_snapshot_from_csv(csv_path)
+        _price_metadata_cache_singleton().set(price_snapshot)
+        log.info(
+            "price_metadata.loaded",
+            source="csv",
+            commodity_types=len(price_snapshot.commodity_types),
+            commodities=price_snapshot.commodities_count,
+            geolocations=price_snapshot.geolocations_count,
+        )
+    except Exception as exc:
+        log.warning(
+            "price_metadata.load_failed",
+            reason=exc.__class__.__name__,
+            hint="Call POST /v1/prices/refresh-metadata after openstat_table.csv is available.",
         )
 
 
