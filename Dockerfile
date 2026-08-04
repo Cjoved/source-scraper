@@ -4,6 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     UV_CACHE_DIR=/tmp/uv-cache \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
@@ -36,8 +37,8 @@ COPY . .
 
 RUN groupadd -r appuser \
     && useradd -r -m -d /home/appuser -g appuser -u 1000 appuser \
-    && mkdir -p /tmp/uv-cache \
-    && chown -R appuser:appuser /app /home/appuser /tmp/uv-cache
+    && mkdir -p /tmp/uv-cache /ms-playwright \
+    && chown -R appuser:appuser /app /home/appuser /tmp/uv-cache /ms-playwright
 
 USER appuser
 
